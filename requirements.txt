@@ -1,0 +1,4 @@
+# OmniRemux Dependencies
+# Backend server runs entirely using Python Standard Library modules (http.server, subprocess, threading, json, etc.).
+# System requirements:
+# - FFmpeg & FFprobe installed and available in system PATH.

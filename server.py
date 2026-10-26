@@ -368,6 +368,84 @@ def run_conversion_job(job_id, options):
             job["error"] = str(e)
             job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
 
+def reveal_in_file_manager(target_path=None):
+    """
+    Reveals the target file in Windows Explorer (or system file manager),
+    highlighting the file if it exists, or opening the folder.
+    Handles spaces and special characters robustly across Windows, macOS, and Linux.
+    """
+    if not target_path or not str(target_path).strip():
+        target_path = OUTPUTS_DIR
+
+    target_path = os.path.normpath(os.path.abspath(target_path))
+
+    # If the file does not exist at target_path, check inside OUTPUTS_DIR
+    if not os.path.exists(target_path):
+        alt_path = os.path.join(OUTPUTS_DIR, os.path.basename(target_path))
+        if os.path.exists(alt_path):
+            target_path = alt_path
+        else:
+            target_path = OUTPUTS_DIR
+
+    if sys.platform == "win32":
+        if os.path.isfile(target_path):
+            # In Windows Explorer, /select, must remain UNQUOTED and immediately precede the quoted path:
+            # e.g.: explorer.exe /select,"C:\path\to\file with spaces.mp4"
+            # Passing a formatted string directly to subprocess.Popen prevents Python's
+            # list2cmdline from wrapping '/select,...' in quotes when spaces are present.
+            try:
+                cmd = f'explorer.exe /select,"{target_path}"'
+                subprocess.Popen(cmd)
+                return True, target_path
+            except Exception:
+                pass
+
+            # Fallback 1: Open parent folder via explorer
+            try:
+                folder = os.path.dirname(target_path)
+                subprocess.Popen(f'explorer.exe "{folder}"')
+                return True, folder
+            except Exception:
+                pass
+
+            # Fallback 2: Open parent folder with os.startfile
+            try:
+                folder = os.path.dirname(target_path)
+                os.startfile(folder)
+                return True, folder
+            except Exception as e:
+                return False, str(e)
+        else:
+            try:
+                subprocess.Popen(f'explorer.exe "{target_path}"')
+                return True, target_path
+            except Exception:
+                pass
+
+            try:
+                os.startfile(target_path)
+                return True, target_path
+            except Exception as e:
+                return False, str(e)
+
+    elif sys.platform == "darwin":  # macOS
+        try:
+            if os.path.isfile(target_path):
+                subprocess.Popen(["open", "-R", target_path])
+            else:
+                subprocess.Popen(["open", target_path])
+            return True, target_path
+        except Exception as e:
+            return False, str(e)
+
+    else:  # Linux / Unix
+        try:
+            folder = os.path.dirname(target_path) if os.path.isfile(target_path) else target_path
+            subprocess.Popen(["xdg-open", folder])
+            return True, folder
+        except Exception as e:
+            return False, str(e)
+
 class OmniRequestHandler(BaseHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -389,7 +467,7 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        path = urllib.parse.unquote(parsed.path)
 
         if path == "/" or path == "/index.html":
             file_path = os.path.join(STATIC_DIR, "index.html")
@@ -625,31 +703,11 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/open-folder":
             target_path = data.get("path")
-            if not target_path or not os.path.exists(target_path):
-                if target_path:
-                    alt_path = os.path.join(OUTPUTS_DIR, os.path.basename(target_path))
-                    if os.path.exists(alt_path):
-                        target_path = alt_path
-                    else:
-                        target_path = OUTPUTS_DIR
-                else:
-                    target_path = OUTPUTS_DIR
-                    
-            target_path = os.path.normpath(target_path)
-            try:
-                if os.path.isfile(target_path):
-                    # In Windows Explorer, /select, must directly precede path with NO space
-                    subprocess.Popen(['explorer.exe', f'/select,{target_path}'])
-                else:
-                    os.startfile(target_path)
-                self.send_json({"status": "opened", "path": target_path})
-            except Exception as e:
-                try:
-                    folder = os.path.dirname(target_path) if os.path.isfile(target_path) else target_path
-                    os.startfile(folder)
-                    self.send_json({"status": "opened", "path": folder})
-                except Exception as e2:
-                    self.send_json({"error": str(e2)}, status=500)
+            success, resolved_path = reveal_in_file_manager(target_path)
+            if success:
+                self.send_json({"status": "opened", "path": resolved_path})
+            else:
+                self.send_json({"error": resolved_path}, status=500)
             return
 
         elif path == "/api/shutdown":
@@ -676,7 +734,9 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
         size = os.path.getsize(file_path)
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        safe_name = download_name.replace('"', '\"')
+        encoded_name = urllib.parse.quote(download_name)
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"; filename*=UTF-8\'\'{encoded_name}')
         self.send_header("Content-Length", str(size))
         self.end_headers()
         with open(file_path, "rb") as f:

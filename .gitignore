@@ -22,3 +22,10 @@ __pycache__/
 .vscode/
 .idea/
 .env
+
+# Temporary recordings and assets
+temp/
+Temp/
+
+venv/
+.venv/
