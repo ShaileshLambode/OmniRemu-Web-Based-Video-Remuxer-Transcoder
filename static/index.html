@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>OmniRemux — Zero-Loss Stream Remuxer & Video Converter</title>
+  
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  
+  <!-- Material Symbols Icons -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "surface-lowest": "#070a10",
+            "surface-base": "#0b0f19",
+            "surface-panel": "rgba(15, 23, 42, 0.75)",
+            "surface-elevated": "rgba(30, 41, 59, 0.85)",
+            "surface-high": "#1e2433",
+            "primary": "#10b981",
+            "primary-bright": "#4edea3",
+            "primary-container": "rgba(16, 185, 129, 0.15)",
+            "secondary": "#6366f1",
+            "secondary-bright": "#818cf8",
+            "secondary-container": "rgba(99, 102, 241, 0.15)",
+            "outline-subtle": "rgba(148, 163, 184, 0.12)",
+            "outline-glow": "rgba(16, 185, 129, 0.4)",
+            "text-main": "#f8fafc",
+            "text-muted": "#94a3b8",
+            "text-dim": "#64748b"
+          },
+          fontFamily: {
+            sans: ["Plus Jakarta Sans", "system-ui", "sans-serif"],
+            mono: ["JetBrains Mono", "monospace"]
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      font-size: 18px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      vertical-align: middle;
+    }
+    
+    .glow-emerald {
+      box-shadow: 0 0 24px -2px rgba(16, 185, 129, 0.35);
+    }
+    .glow-indigo {
+      box-shadow: 0 0 20px -2px rgba(99, 102, 241, 0.3);
+    }
+    .cyber-grid {
+      background-size: 32px 32px;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    }
+    
+    .neon-dropzone {
+      background-image: repeating-linear-gradient(0deg, #10b981, #10b981 12px, transparent 12px, transparent 20px),
+                        repeating-linear-gradient(90deg, #10b981, #10b981 12px, transparent 12px, transparent 20px),
+                        repeating-linear-gradient(180deg, #6366f1, #6366f1 12px, transparent 12px, transparent 20px),
+                        repeating-linear-gradient(270deg, #6366f1, #6366f1 12px, transparent 12px, transparent 20px);
+      background-size: 2px 100%, 100% 2px, 2px 100%, 100% 2px;
+      background-position: 0 0, 0 0, 100% 0, 0 100%;
+      background-repeat: no-repeat;
+    }
+    
+    .custom-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: #070a10;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: #1e2433;
+      border-radius: 4px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb:hover {
+      background: #334155;
+    }
+
+    input[type=range]::-webkit-slider-thumb {
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 9999px;
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      cursor: pointer;
+      border: 2px solid #070a10;
+      margin-top: -5px;
+    }
+    input[type=range]::-webkit-slider-runnable-track {
+      width: 100%;
+      height: 4px;
+      cursor: pointer;
+      background: #1e2433;
+      border-radius: 2px;
+    }
+  </style>
+</head>
+
+<body class="bg-surface-lowest text-text-main font-sans min-h-screen flex flex-col cyber-grid selection:bg-primary/20 selection:text-primary-bright">
+
+  <!-- TOP APP BAR -->
+  <header class="bg-surface-base/90 backdrop-blur-xl sticky top-0 z-50 border-b border-outline-subtle px-4 sm:px-6 py-3 flex items-center justify-between">
+    <!-- Brand / Title -->
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-primary to-secondary p-0.5 shadow-lg shadow-primary/20 flex items-center justify-center">
+        <div class="w-full h-full bg-surface-lowest rounded-[10px] flex items-center justify-center">
+          <span class="material-symbols-outlined text-primary-bright text-[22px]">play_circle</span>
+        </div>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-lg font-bold tracking-tight text-white">OmniRemux</h1>
+          <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-primary-container text-primary-bright font-semibold border border-primary/30">v2.5 Studio</span>
+        </div>
+        <p class="text-xs text-text-muted hidden sm:block">Zero-Loss Stream Remuxer & Telegram Video Transcoder</p>
+      </div>
+    </div>
+
+    <!-- Center Engine Status Pill -->
+    <div class="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-panel border border-outline-subtle text-xs font-mono">
+      <span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+      <span id="engineStatusText" class="text-primary-bright font-medium">Engine: FFmpeg Active</span>
+      <span class="text-text-dim">•</span>
+      <span class="text-secondary-bright">Zero-Loss Remux Armed</span>
+    </div>
+
+    <!-- Right Quick Actions -->
+    <div class="flex items-center gap-2">
+      <button id="toggleLocalFilesBtn" class="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-elevated text-text-main border border-outline-subtle text-xs font-medium flex items-center gap-1.5 transition-all">
+        <span class="material-symbols-outlined text-secondary-bright text-[16px]">folder_special</span>
+        <span>Local Videos</span>
+        <span id="localFileCountBadge" class="bg-secondary/20 text-secondary-bright px-1.5 py-0.2 rounded text-[10px] ml-0.5">...</span>
+      </button>
+
+      <button id="openOutputsFolderBtn" class="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-elevated text-text-main border border-outline-subtle text-xs font-medium flex items-center gap-1.5 transition-all" title="Open Outputs Folder in Windows Explorer">
+        <span class="material-symbols-outlined text-primary text-[16px]">folder_open</span>
+        <span class="hidden sm:inline">Outputs Folder</span>
+      </button>
+
+      <button id="shutdownServerBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-panel hover:bg-red-950/80 text-text-muted hover:text-red-400 border border-outline-subtle hover:border-red-500/40 text-xs font-medium flex items-center gap-1 transition-all" title="Stop OmniRemux Server">
+        <span class="material-symbols-outlined text-[16px]">power_settings_new</span>
+        <span class="hidden sm:inline">Stop</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN VIEWPORT -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- LOCAL WORKSPACE SCANNER ACCORDION -->
+    <section id="localFilesSection" class="hidden rounded-2xl bg-surface-panel backdrop-blur-xl border border-secondary/30 p-4 transition-all shadow-xl">
+      <div class="flex items-center justify-between mb-3 border-b border-outline-subtle pb-2">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-secondary-bright">folder_open</span>
+          <h3 class="text-sm font-bold text-white">Videos Detected in Workspace</h3>
+          <span class="text-xs text-text-muted">(Click to convert immediately — 0 second upload!)</span>
+        </div>
+        <button id="closeLocalFilesBtn" class="text-text-muted hover:text-white text-xs">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+      <div id="localFilesList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-60 overflow-y-auto custom-scroll pr-1">
+        <!-- Populated via JS -->
+      </div>
+    </section>
+
+    <!-- SECTION 1: HERO DRAG & DROP ZONE -->
+    <section class="relative group">
+      <div id="dropZone" class="relative w-full rounded-2xl p-8 sm:p-12 bg-surface-panel backdrop-blur-xl border-2 border-dashed border-outline-subtle hover:border-primary/60 transition-all duration-300 text-center flex flex-col items-center justify-center cursor-pointer shadow-2xl overflow-hidden">
+        
+        <!-- Ambient Radial Glow Behind Dropzone -->
+        <div class="absolute -top-24 left-1/2 -translate-x-1/2 w-96 h-48 bg-primary/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="absolute -bottom-24 right-1/4 w-80 h-40 bg-secondary/10 rounded-full blur-3xl pointer-events-none"></div>
+
+        <!-- Cloud Upload Icon Container -->
+        <div class="relative mb-4 flex items-center justify-center">
+          <div class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-surface-lowest flex items-center justify-center border border-primary/30 group-hover:border-primary group-hover:scale-105 transition-all duration-300 glow-emerald">
+            <span class="material-symbols-outlined text-primary-bright text-[36px] sm:text-[42px] group-hover:animate-bounce">cloud_upload</span>
+          </div>
+        </div>
+
+        <h2 class="text-xl sm:text-2xl font-bold tracking-tight text-white mb-2">
+          Drag & Drop your video files here
+        </h2>
+        <p class="text-sm text-text-muted max-w-lg mb-6">
+          Instant Zero-Loss Remuxing & Conversion. Supports <span class="text-primary-bright font-mono font-semibold">MKV, MP4, MOV, WebM, AVI, TS</span>.
+        </p>
+
+        <!-- CTA Buttons -->
+        <div class="flex flex-wrap items-center justify-center gap-3">
+          <button id="browseFilesBtn" class="bg-primary hover:bg-primary-bright text-surface-lowest font-bold text-sm px-6 py-2.5 rounded-xl shadow-lg shadow-primary/25 flex items-center gap-2 transition-transform duration-150 active:scale-95">
+            <span class="material-symbols-outlined text-[18px]">file_open</span>
+            Browse Video Files
+          </button>
+          <input type="file" id="fileInput" class="hidden" multiple accept="video/*,.mkv,.mp4,.mov,.webm,.avi,.ts,.m2ts"/>
+        </div>
+
+        <!-- Meta Badges -->
+        <div class="mt-6 flex flex-wrap items-center justify-center gap-2.5 text-xs font-mono">
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-lowest/80 border border-outline-subtle text-text-muted">
+            <span class="material-symbols-outlined text-primary text-[14px]">bolt</span>
+            Speed: 1 to 3 Seconds / Hour
+          </span>
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-container border border-primary/40 text-primary-bright">
+            <span class="w-1.5 h-1.5 rounded-full bg-primary animate-ping"></span>
+            0% Video Quality Loss (Copy)
+          </span>
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary-container border border-secondary/40 text-secondary-bright">
+            <span class="material-symbols-outlined text-secondary-bright text-[14px]">volume_up</span>
+            Telegram Web AAC Audio Fix
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: TARGET PRESET SWITCHER -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-primary text-[20px]">tune</span>
+          <h3 class="text-base font-bold text-white">Target Format & Preset</h3>
+        </div>
+        <span class="text-xs font-mono text-text-muted">Select desired output profile</span>
+      </div>
+
+      <!-- Presets Grid -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3" id="presetContainer">
+        
+        <!-- Preset 1: Telegram & Web MP4 (DEFAULT) -->
+        <div data-preset="telegram_web_mp4" class="preset-card relative p-4 rounded-xl bg-surface-elevated border-2 border-primary glow-emerald flex flex-col justify-between cursor-pointer transition-all duration-150">
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-8 h-8 rounded-lg bg-primary/20 text-primary flex items-center justify-center border border-primary/40">
+              <span class="material-symbols-outlined text-[18px]">send</span>
+            </div>
+            <span class="preset-badge font-mono text-[10px] px-2 py-0.5 rounded bg-primary/20 text-primary-bright font-bold border border-primary/40">SELECTED</span>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-white mb-0.5">Telegram & Web MP4</h4>
+            <p class="text-xs text-text-muted mb-2.5">Zero-Loss Container Remux</p>
+            <div class="flex flex-wrap gap-1 text-[10px] font-mono">
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-primary-bright border border-primary/30">1-3s Fast</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted border border-outline-subtle">AAC Fix</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-secondary-bright border border-outline-subtle">FastStart</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preset 2: Universal MP4 -->
+        <div data-preset="universal_mp4" class="preset-card p-4 rounded-xl bg-surface-panel hover:bg-surface-elevated border border-outline-subtle hover:border-outline-glow transition-all cursor-pointer flex flex-col justify-between">
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-8 h-8 rounded-lg bg-surface-lowest text-text-muted flex items-center justify-center">
+              <span class="material-symbols-outlined text-[18px]">devices</span>
+            </div>
+            <span class="font-mono text-xs text-text-dim">H.264</span>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-white mb-0.5">Universal MP4</h4>
+            <p class="text-xs text-text-muted mb-2.5">Standard Transcode (H.264 / AAC)</p>
+            <div class="flex flex-wrap gap-1 text-[10px] font-mono">
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">All Devices</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">Smart Scale</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preset 3: WebM Stream -->
+        <div data-preset="webm" class="preset-card p-4 rounded-xl bg-surface-panel hover:bg-surface-elevated border border-outline-subtle hover:border-outline-glow transition-all cursor-pointer flex flex-col justify-between">
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-8 h-8 rounded-lg bg-surface-lowest text-secondary-bright flex items-center justify-center">
+              <span class="material-symbols-outlined text-[18px]">public</span>
+            </div>
+            <span class="font-mono text-xs text-secondary-bright">VP9 / Opus</span>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-white mb-0.5">WebM Stream</h4>
+            <p class="text-xs text-text-muted mb-2.5">Discord & Chromium Optimized</p>
+            <div class="flex flex-wrap gap-1 text-[10px] font-mono">
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">Web Video</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">HTML5 Native</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preset 4: Audio Extract -->
+        <div data-preset="audio_mp3" class="preset-card p-4 rounded-xl bg-surface-panel hover:bg-surface-elevated border border-outline-subtle hover:border-outline-glow transition-all cursor-pointer flex flex-col justify-between">
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-8 h-8 rounded-lg bg-surface-lowest text-secondary-bright flex items-center justify-center">
+              <span class="material-symbols-outlined text-[18px]">headphones</span>
+            </div>
+            <span class="font-mono text-xs text-secondary-bright">320 kbps</span>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-white mb-0.5">Extract Audio (MP3)</h4>
+            <p class="text-xs text-text-muted mb-2.5">High-Bitrate Audio Track</p>
+            <div class="flex flex-wrap gap-1 text-[10px] font-mono">
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">MP3 320k</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">Pure Sound</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preset 5: Animated GIF -->
+        <div data-preset="gif" class="preset-card p-4 rounded-xl bg-surface-panel hover:bg-surface-elevated border border-outline-subtle hover:border-outline-glow transition-all cursor-pointer flex flex-col justify-between">
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-8 h-8 rounded-lg bg-surface-lowest text-primary flex items-center justify-center">
+              <span class="material-symbols-outlined text-[18px]">gif_box</span>
+            </div>
+            <span class="font-mono text-xs text-primary">GIF Loop</span>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-white mb-0.5">Smooth GIF</h4>
+            <p class="text-xs text-text-muted mb-2.5">PaletteGen Clip Loop</p>
+            <div class="flex flex-wrap gap-1 text-[10px] font-mono">
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">60 FPS</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">Dithered</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- SECTION 3: SPLIT WORKBENCH (ACTIVE FILE QUEUE & OUTPUT PARAMETERS) -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- LEFT 7 COLS: ACTIVE FILE & CODEC INSPECTOR -->
+      <div class="lg:col-span-7 space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-[20px]">movie_filter</span>
+            <h3 class="text-base font-bold text-white">Active Queue & Stream Inspector</h3>
+          </div>
+          <span id="queueBadge" class="text-xs font-mono text-primary-bright bg-primary-container px-2.5 py-0.5 rounded-full border border-primary/30">
+            0 Files Loaded
+          </span>
+        </div>
+
+        <!-- Active File Card Container -->
+        <div id="activeFileContainer" class="p-5 rounded-2xl bg-surface-panel backdrop-blur-xl border border-outline-subtle space-y-4 shadow-lg min-h-[220px] flex flex-col justify-center">
+          
+          <!-- Empty State (Shown when no file is selected) -->
+          <div id="emptyQueueState" class="text-center py-8">
+            <div class="w-12 h-12 rounded-2xl bg-surface-lowest mx-auto flex items-center justify-center text-text-dim border border-outline-subtle mb-3">
+              <span class="material-symbols-outlined text-[24px]">playlist_add</span>
+            </div>
+            <h4 class="text-sm font-semibold text-text-muted mb-1">No video loaded yet</h4>
+            <p class="text-xs text-text-dim max-w-sm mx-auto mb-4">
+              Drag & drop a video file above or click "Local Videos" to pick a file from your folder.
+            </p>
+            <button id="quickSampleBtn" class="text-xs font-mono text-primary-bright hover:underline flex items-center gap-1 mx-auto">
+              <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+              Load India's Got Latent S02E09 (732MB MKV)
+            </button>
+          </div>
+
+          <!-- File Loaded Content (Hidden until file selected) -->
+          <div id="fileLoadedContent" class="hidden space-y-4">
+            
+            <!-- Header bar with thumbnail, title, size, duration -->
+            <div class="flex items-start gap-4 border-b border-outline-subtle pb-4">
+              <div class="relative w-24 h-16 sm:w-28 sm:h-20 rounded-xl bg-surface-lowest overflow-hidden flex-shrink-0 border border-outline-subtle">
+                <img id="fileThumb" src="" alt="Thumbnail" class="w-full h-full object-cover hidden"/>
+                <div id="thumbPlaceholder" class="w-full h-full flex items-center justify-center text-text-dim">
+                  <span class="material-symbols-outlined text-[28px]">movie</span>
+                </div>
+              </div>
+
+              <div class="flex-1 min-w-0">
+                <div class="flex items-start justify-between gap-2">
+                  <h4 id="fileName" class="text-sm sm:text-base font-bold text-white truncate" title="">Video.mkv</h4>
+                  <button id="clearFileBtn" class="text-text-dim hover:text-white p-1" title="Remove">
+                    <span class="material-symbols-outlined text-[18px]">close</span>
+                  </button>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-xs font-mono text-text-muted mt-1">
+                  <span id="fileSize" class="text-white font-semibold">0 MB</span>
+                  <span>•</span>
+                  <span id="fileDuration" class="text-secondary-bright">00:00</span>
+                  <span>•</span>
+                  <span id="fileContainer" class="text-primary-bright">Container</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Detailed Streams Breakdown -->
+            <div id="streamsList" class="space-y-2 text-xs font-mono">
+              <!-- Injected via JS -->
+            </div>
+
+            <!-- Live Conversion Progress Bar -->
+            <div id="progressBox" class="hidden space-y-2 pt-2">
+              <div class="flex items-center justify-between text-xs font-mono">
+                <div class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-primary animate-ping"></span>
+                  <span id="progressStatusText" class="text-primary-bright font-bold">Remuxing Container...</span>
+                  <span id="progressSpeed" class="text-text-muted">Speed: --</span>
+                </div>
+                <span id="progressPercent" class="text-white font-bold text-sm">0%</span>
+              </div>
+
+              <div class="w-full h-3 bg-surface-lowest rounded-full overflow-hidden p-0.5 border border-outline-subtle">
+                <div id="progressBar" class="h-full bg-gradient-to-r from-secondary via-primary to-primary-bright rounded-full transition-all duration-200 relative" style="width: 0%">
+                  <div class="absolute right-0 top-0 bottom-0 w-2 bg-white rounded-full shadow-[0_0_8px_#ffffff]"></div>
+                </div>
+              </div>
+
+              <!-- Telemetry Metrics Grid -->
+              <div class="grid grid-cols-4 gap-2 pt-1 text-center font-mono text-[11px]">
+                <div class="bg-surface-lowest p-2 rounded-lg border border-outline-subtle">
+                  <span class="text-text-dim block text-[9px]">PROCESSED</span>
+                  <span id="metricProcessed" class="text-white font-semibold">--</span>
+                </div>
+                <div class="bg-surface-lowest p-2 rounded-lg border border-outline-subtle">
+                  <span class="text-text-dim block text-[9px]">THROUGHPUT</span>
+                  <span id="metricFps" class="text-primary-bright font-semibold">-- fps</span>
+                </div>
+                <div class="bg-surface-lowest p-2 rounded-lg border border-outline-subtle">
+                  <span class="text-text-dim block text-[9px]">ETA TIME</span>
+                  <span id="metricEta" class="text-secondary-bright font-semibold">--:--</span>
+                </div>
+                <div class="bg-surface-lowest p-2 rounded-lg border border-outline-subtle">
+                  <span class="text-text-dim block text-[9px]">CONTAINER</span>
+                  <span id="metricTargetExt" class="text-white font-semibold">.mp4</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Trigger Action Bar -->
+            <div class="flex items-center justify-between pt-2">
+              <div id="uploadIndicator" class="text-xs font-mono text-secondary-bright hidden flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-secondary-bright animate-ping"></span>
+                <span id="uploadProgressText">Uploading: 0%</span>
+              </div>
+              <div class="flex items-center gap-2 ml-auto">
+                <button id="cancelJobBtn" class="hidden px-3 py-1.5 rounded-lg bg-surface-lowest hover:bg-red-950 text-red-400 border border-red-500/30 text-xs font-semibold flex items-center gap-1">
+                  <span class="material-symbols-outlined text-[15px]">cancel</span>
+                  Cancel
+                </button>
+                <button id="startConvertBtn" class="px-5 py-2 rounded-xl bg-primary hover:bg-primary-bright text-surface-lowest font-bold text-sm shadow-lg shadow-primary/25 flex items-center gap-2 transition-all duration-150 active:scale-95">
+                  <span class="material-symbols-outlined text-[18px]">play_arrow</span>
+                  Start Remux / Conversion
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- COMPLETED SUMMARY CARD -->
+        <div id="completedCard" class="hidden p-4 rounded-xl bg-surface-panel/90 border border-primary/40 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-10 h-10 rounded-xl bg-primary-container text-primary-bright flex items-center justify-center border border-primary/40 flex-shrink-0">
+              <span class="material-symbols-outlined text-[24px]">task_alt</span>
+            </div>
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <h5 id="completedFilename" class="text-sm font-bold text-white truncate">output.mp4</h5>
+                <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-primary/20 text-primary-bright font-bold border border-primary/40">COMPLETED</span>
+              </div>
+              <p id="completedStats" class="text-xs font-mono text-text-muted mt-0.5">
+                Remuxed in 1.4s • FastStart Enabled • Zero Loss
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button id="previewBtn" class="px-3 py-1.5 rounded-lg bg-surface-elevated hover:bg-surface-high text-white text-xs font-medium flex items-center gap-1.5 border border-outline-subtle transition-all">
+              <span class="material-symbols-outlined text-primary text-[16px]">play_circle</span>
+              Preview
+            </button>
+            <button id="openFolderBtn" class="px-3 py-1.5 rounded-lg bg-surface-elevated hover:bg-surface-high text-white text-xs font-medium flex items-center gap-1.5 border border-outline-subtle transition-all">
+              <span class="material-symbols-outlined text-secondary-bright text-[16px]">folder_open</span>
+              Show in Folder
+            </button>
+            <a id="downloadLink" href="#" download="" class="px-4 py-1.5 rounded-lg bg-primary hover:bg-primary-bright text-surface-lowest text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-primary/20">
+              <span class="material-symbols-outlined text-[16px]">download</span>
+              Download
+            </a>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- RIGHT 5 COLS: PRECISION SETTINGS & TUNING -->
+      <div class="lg:col-span-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-secondary-bright text-[20px]">tune</span>
+            <h3 class="text-base font-bold text-white">Conversion Parameters</h3>
+          </div>
+          <button id="resetParamsBtn" class="text-xs font-mono text-secondary-bright hover:underline">Reset Defaults</button>
+        </div>
+
+        <div class="p-5 rounded-2xl bg-surface-panel backdrop-blur-xl border border-outline-subtle space-y-4 shadow-lg">
+          
+          <!-- Audio Transcode Strategy -->
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-text-muted flex items-center justify-between">
+              <span>Audio Stream Handling (Telegram Compatibility)</span>
+              <span class="text-primary-bright text-[10px] font-mono">Auto-Safe</span>
+            </label>
+            <div class="relative">
+              <select id="audioStrategySelect" class="w-full bg-surface-lowest border border-outline-subtle rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-primary appearance-none pr-8">
+                <option value="auto" selected>Auto: Keep AAC if present, convert EAC3/DTS to AAC 256k</option>
+                <option value="copy">Direct Stream Copy (All Audio Tracks)</option>
+                <option value="aac_stereo">Force Convert to AAC Stereo (256 kbps)</option>
+                <option value="aac_51">Force Convert to AAC 5.1 Surround (384 kbps)</option>
+                <option value="mute">Mute (Remove Audio Track)</option>
+              </select>
+              <span class="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-text-dim pointer-events-none text-[16px]">expand_more</span>
+            </div>
+            <p class="text-[11px] text-text-dim">Telegram Web does NOT support EAC3/Dolby Digital Plus audio. Auto selects AAC or converts to AAC stereo.</p>
+          </div>
+
+          <!-- Target Resolution -->
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-text-muted">Target Video Resolution</label>
+            <div class="grid grid-cols-4 gap-1.5 p-1 bg-surface-lowest rounded-xl border border-outline-subtle text-xs font-mono">
+              <button type="button" data-res="original" class="res-btn py-1.5 text-center rounded-lg bg-surface-elevated text-primary-bright border border-primary/40 font-semibold">Original</button>
+              <button type="button" data-res="1080p" class="res-btn py-1.5 text-center rounded-lg text-text-muted hover:text-white">1080p</button>
+              <button type="button" data-res="720p" class="res-btn py-1.5 text-center rounded-lg text-text-muted hover:text-white">720p</button>
+              <button type="button" data-res="480p" class="res-btn py-1.5 text-center rounded-lg text-text-muted hover:text-white">480p</button>
+            </div>
+          </div>
+
+          <!-- Quality CRF Slider (Used when re-encoding) -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between text-xs">
+              <label class="font-medium text-text-muted">Constant Rate Factor (CRF)</label>
+              <span id="crfValueDisplay" class="font-mono text-primary-bright font-bold">18 (Visually Lossless)</span>
+            </div>
+            <input type="range" id="crfSlider" min="0" max="51" value="18" class="w-full accent-primary bg-surface-lowest cursor-pointer"/>
+            <div class="flex justify-between text-[10px] font-mono text-text-dim">
+              <span>0 (Pure Lossless)</span>
+              <span>18 (Studio Standard)</span>
+              <span>28 (Compressed)</span>
+            </div>
+          </div>
+
+          <!-- Fast Start Toggle -->
+          <div class="pt-2 border-t border-outline-subtle space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-xs font-semibold text-white flex items-center gap-1.5">
+                  Web FastStart (+faststart)
+                  <span class="px-1.5 py-0.2 rounded bg-primary-container text-primary-bright font-mono text-[9px]">RECOMMENDED</span>
+                </div>
+                <div class="text-[11px] text-text-dim">Moves index metadata to start of MP4 so video plays instantly without waiting for download</div>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="faststartToggle" checked class="sr-only peer"/>
+                <div class="w-9 h-5 bg-surface-lowest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-surface-lowest after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+              </label>
+            </div>
+
+            <!-- Optional Trim Inputs -->
+            <div class="grid grid-cols-2 gap-2 pt-1">
+              <div>
+                <label class="text-[11px] text-text-muted block mb-1">Trim Start (Optional)</label>
+                <input type="text" id="trimStartInput" placeholder="00:00:00" class="w-full bg-surface-lowest border border-outline-subtle rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-primary"/>
+              </div>
+              <div>
+                <label class="text-[11px] text-text-muted block mb-1">Trim End (Optional)</label>
+                <input type="text" id="trimEndInput" placeholder="00:00:00" class="w-full bg-surface-lowest border border-outline-subtle rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-primary"/>
+              </div>
+            </div>
+
+            <!-- Custom Output Filename -->
+            <div>
+              <label class="text-[11px] text-text-muted block mb-1">Custom Output Filename (Optional)</label>
+              <input type="text" id="customFilenameInput" placeholder="Leave empty for auto-name" class="w-full bg-surface-lowest border border-outline-subtle rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-primary"/>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SECTION 4: LIVE TERMINAL LOGS DRAWER -->
+    <section class="rounded-2xl bg-surface-lowest border border-outline-subtle overflow-hidden shadow-2xl">
+      <!-- Drawer Header -->
+      <div class="px-4 py-2.5 bg-surface-panel border-b border-outline-subtle flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-red-500/80"></span>
+            <span class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></span>
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></span>
+          </div>
+          <div class="flex items-center gap-2 font-mono text-xs text-text-main">
+            <span class="material-symbols-outlined text-primary text-[15px]">terminal</span>
+            <span class="font-bold">FFmpeg Engine Core Daemon (Live STDOUT)</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="copyLogsBtn" class="px-2.5 py-1 rounded bg-surface-lowest hover:bg-surface-elevated text-text-muted hover:text-white font-mono text-[11px] flex items-center gap-1 border border-outline-subtle transition-all">
+            <span class="material-symbols-outlined text-[13px]">content_copy</span>
+            Copy
+          </button>
+          <button id="clearLogsBtn" class="px-2.5 py-1 rounded bg-surface-lowest hover:bg-surface-elevated text-text-muted hover:text-white font-mono text-[11px] flex items-center gap-1 border border-outline-subtle transition-all">
+            <span class="material-symbols-outlined text-[13px]">delete</span>
+            Clear
+          </button>
+          <button id="toggleLogsBtn" class="text-text-muted hover:text-white p-1">
+            <span class="material-symbols-outlined text-[18px]">keyboard_arrow_down</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Logs Body -->
+      <div id="logsBody" class="p-4 font-mono text-xs custom-scroll max-h-48 overflow-y-auto space-y-1 bg-[#05070c] text-text-muted">
+        <div class="text-text-dim">[init] OmniRemux Studio ready. Drop any video to begin.</div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- VIDEO PREVIEW MODAL -->
+  <div id="previewModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="w-full max-w-4xl bg-surface-panel rounded-2xl border border-outline-subtle overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+      <div class="p-3 bg-surface-lowest border-b border-outline-subtle flex items-center justify-between">
+        <div class="flex items-center gap-2 font-mono text-xs text-white">
+          <span class="material-symbols-outlined text-primary">play_circle</span>
+          <span id="previewModalTitle">Video Preview</span>
+        </div>
+        <button id="closePreviewModalBtn" class="text-text-muted hover:text-white">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <div class="p-4 bg-black flex items-center justify-center">
+        <video id="previewPlayer" controls class="w-full max-h-[70vh] rounded-lg shadow-lg" preload="metadata">
+          Your browser does not support HTML5 video.
+        </video>
+      </div>
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT APPLICATION LOGIC -->
+  <script>
+    // State
+    let currentFile = null;         // { path, filename, probe, isUploaded }
+    let currentJobId = null;
+    let pollInterval = null;
+    let selectedPreset = "telegram_web_mp4";
+    let selectedResolution = "original";
+
+    // DOM Elements
+    const dropZone = document.getElementById("dropZone");
+    const fileInput = document.getElementById("fileInput");
+    const browseFilesBtn = document.getElementById("browseFilesBtn");
+    const emptyQueueState = document.getElementById("emptyQueueState");
+    const fileLoadedContent = document.getElementById("fileLoadedContent");
+    const fileName = document.getElementById("fileName");
+    const fileSize = document.getElementById("fileSize");
+    const fileDuration = document.getElementById("fileDuration");
+    const fileContainer = document.getElementById("fileContainer");
+    const fileThumb = document.getElementById("fileThumb");
+    const thumbPlaceholder = document.getElementById("thumbPlaceholder");
+    const streamsList = document.getElementById("streamsList");
+    const queueBadge = document.getElementById("queueBadge");
+    const clearFileBtn = document.getElementById("clearFileBtn");
+    const quickSampleBtn = document.getElementById("quickSampleBtn");
+
+    const startConvertBtn = document.getElementById("startConvertBtn");
+    const cancelJobBtn = document.getElementById("cancelJobBtn");
+    const progressBox = document.getElementById("progressBox");
+    const progressBar = document.getElementById("progressBar");
+    const progressPercent = document.getElementById("progressPercent");
+    const progressStatusText = document.getElementById("progressStatusText");
+    const progressSpeed = document.getElementById("progressSpeed");
+    const metricProcessed = document.getElementById("metricProcessed");
+    const metricFps = document.getElementById("metricFps");
+    const metricEta = document.getElementById("metricEta");
+    const metricTargetExt = document.getElementById("metricTargetExt");
+    const uploadIndicator = document.getElementById("uploadIndicator");
+    const uploadProgressText = document.getElementById("uploadProgressText");
+
+    const completedCard = document.getElementById("completedCard");
+    const completedFilename = document.getElementById("completedFilename");
+    const completedStats = document.getElementById("completedStats");
+    const previewBtn = document.getElementById("previewBtn");
+    const openFolderBtn = document.getElementById("openFolderBtn");
+    const downloadLink = document.getElementById("downloadLink");
+
+    const audioStrategySelect = document.getElementById("audioStrategySelect");
+    const crfSlider = document.getElementById("crfSlider");
+    const crfValueDisplay = document.getElementById("crfValueDisplay");
+    const faststartToggle = document.getElementById("faststartToggle");
+    const trimStartInput = document.getElementById("trimStartInput");
+    const trimEndInput = document.getElementById("trimEndInput");
+    const customFilenameInput = document.getElementById("customFilenameInput");
+
+    const logsBody = document.getElementById("logsBody");
+    const copyLogsBtn = document.getElementById("copyLogsBtn");
+    const clearLogsBtn = document.getElementById("clearLogsBtn");
+    const toggleLogsBtn = document.getElementById("toggleLogsBtn");
+
+    const toggleLocalFilesBtn = document.getElementById("toggleLocalFilesBtn");
+    const localFilesSection = document.getElementById("localFilesSection");
+    const localFilesList = document.getElementById("localFilesList");
+    const localFileCountBadge = document.getElementById("localFileCountBadge");
+    const closeLocalFilesBtn = document.getElementById("closeLocalFilesBtn");
+    const openOutputsFolderBtn = document.getElementById("openOutputsFolderBtn");
+
+    const previewModal = document.getElementById("previewModal");
+    const previewPlayer = document.getElementById("previewPlayer");
+    const previewModalTitle = document.getElementById("previewModalTitle");
+    const closePreviewModalBtn = document.getElementById("closePreviewModalBtn");
+
+    // Initialize
+    document.addEventListener("DOMContentLoaded", () => {
+      fetchSystemStatus();
+      fetchLocalFiles();
+      setupPresets();
+      setupResolutionButtons();
+      setupDragAndDrop();
+    });
+
+    function log(msg, type = "info") {
+      const line = document.createElement("div");
+      let color = "text-text-muted";
+      if (type === "success") color = "text-primary-bright font-semibold";
+      if (type === "error") color = "text-red-400 font-semibold";
+      if (type === "cmd") color = "text-secondary-bright";
+      line.className = color;
+      line.textContent = msg;
+      logsBody.appendChild(line);
+      logsBody.scrollTop = logsBody.scrollHeight;
+    }
+
+    // System Status
+    async function fetchSystemStatus() {
+      try {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        if (data.ffmpeg_version) {
+          document.getElementById("engineStatusText").textContent = `Engine: ${data.ffmpeg_version.split(" ")[0]} ${data.ffmpeg_version.split(" ")[2] || "Active"}`;
+        }
+      } catch (e) {
+        console.error("Status fetch error", e);
+      }
+    }
+
+    // Fetch Local Workspace Files
+    async function fetchLocalFiles() {
+      try {
+        const res = await fetch("/api/local-files");
+        const data = await res.json();
+        localFileCountBadge.textContent = `${data.files.length} found`;
+        
+        localFilesList.innerHTML = "";
+        if (data.files.length === 0) {
+          localFilesList.innerHTML = `<div class="col-span-full text-xs text-text-dim py-2">No videos found in workspace root.</div>`;
+          return;
+        }
+
+        data.files.forEach(f => {
+          const item = document.createElement("div");
+          item.className = "p-2.5 rounded-xl bg-surface-lowest border border-outline-subtle hover:border-secondary/50 flex items-center justify-between gap-2 cursor-pointer transition-all";
+          item.innerHTML = `
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white truncate" title="${f.filename}">${f.filename}</div>
+              <div class="text-[10px] font-mono text-text-muted">${f.size_formatted}</div>
+            </div>
+            <button class="px-2.5 py-1 rounded bg-secondary-container hover:bg-secondary/30 text-secondary-bright font-mono text-[10px] font-bold border border-secondary/40 shrink-0">
+              Select
+            </button>
+          `;
+          item.addEventListener("click", () => {
+            loadLocalFilePath(f.path, f.filename);
+            localFilesSection.classList.add("hidden");
+          });
+          localFilesList.appendChild(item);
+        });
+      } catch (e) {
+        console.error("Local files error", e);
+      }
+    }
+
+    // Load Local File
+    async function loadLocalFilePath(path, filename) {
+      log(`[probe] Inspecting local file: ${filename}...`, "info");
+      try {
+        const res = await fetch("/api/probe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: path, filename: filename })
+        });
+        const probeData = await res.json();
+        if (probeData.error) {
+          log(`[probe] Error: ${probeData.error}`, "error");
+          alert("Could not probe file: " + probeData.error);
+          return;
+        }
+        currentFile = {
+          path: probeData.path,
+          filename: probeData.filename,
+          probe: probeData,
+          isUploaded: true
+        };
+        renderFileLoaded(probeData);
+        log(`[probe] File probed successfully: ${probeData.video_streams.length} video streams, ${probeData.audio_streams.length} audio streams.`, "success");
+      } catch (e) {
+        log(`[probe] Exception: ${e}`, "error");
+      }
+    }
+
+    // Render Loaded File Info
+    function renderFileLoaded(probe) {
+      emptyQueueState.classList.add("hidden");
+      fileLoadedContent.classList.remove("hidden");
+      completedCard.classList.add("hidden");
+      progressBox.classList.add("hidden");
+
+      fileName.textContent = probe.filename;
+      fileName.title = probe.filename;
+      fileSize.textContent = probe.size_formatted;
+      fileDuration.textContent = `Duration: ${probe.duration_formatted}`;
+      fileContainer.textContent = `Container: ${probe.container}`;
+      queueBadge.textContent = "1 File Loaded";
+
+      if (probe.thumbnail_url) {
+        fileThumb.src = probe.thumbnail_url;
+        fileThumb.classList.remove("hidden");
+        thumbPlaceholder.classList.add("hidden");
+      } else {
+        fileThumb.classList.add("hidden");
+        thumbPlaceholder.classList.remove("hidden");
+      }
+
+      // Streams Breakdown
+      streamsList.innerHTML = "";
+
+      // Video Stream
+      probe.video_streams.forEach(v => {
+        const div = document.createElement("div");
+        div.className = "p-2.5 rounded-lg bg-surface-lowest border border-outline-subtle flex items-center justify-between";
+        div.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="px-1.5 py-0.5 rounded bg-primary-container text-primary-bright font-bold text-[10px]">#0:${v.index} VIDEO</span>
+            <span class="text-white font-medium">${v.codec.toUpperCase()} (${v.width}x${v.height})</span>
+            <span class="text-text-muted">• ${Math.round(v.fps)} FPS</span>
+          </div>
+          <span class="px-2 py-0.5 rounded bg-primary/20 text-primary-bright font-bold text-[10px]">COPY (Direct)</span>
+        `;
+        streamsList.appendChild(div);
+      });
+
+      // Audio Streams
+      probe.audio_streams.forEach(a => {
+        const div = document.createElement("div");
+        div.className = "p-2.5 rounded-lg bg-surface-lowest border border-outline-subtle flex items-center justify-between";
+        const isAac = a.is_aac;
+        div.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="px-1.5 py-0.5 rounded ${isAac ? 'bg-primary-container text-primary-bright' : 'bg-secondary-container text-secondary-bright'} font-bold text-[10px]">#0:${a.index} AUDIO</span>
+            <span class="text-white font-medium">${a.codec.toUpperCase()} (${a.channel_layout})</span>
+            <span class="text-text-muted">• ${a.sample_rate} Hz ${a.language ? '['+a.language+']' : ''}</span>
+          </div>
+          <span class="px-2 py-0.5 rounded ${isAac ? 'bg-primary/20 text-primary-bright' : 'bg-yellow-500/20 text-yellow-300'} font-bold text-[10px]">
+            ${isAac ? 'AAC Native' : 'Auto-Transcode AAC'}
+          </span>
+        `;
+        streamsList.appendChild(div);
+      });
+
+      // Subtitles
+      probe.subtitle_streams.forEach(s => {
+        const div = document.createElement("div");
+        div.className = "p-2 rounded-lg bg-surface-lowest border border-outline-subtle flex items-center justify-between text-text-dim";
+        div.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="px-1.5 py-0.5 rounded bg-surface-elevated text-text-muted text-[10px]">#0:${s.index} SUB</span>
+            <span>${s.codec.toUpperCase()} (${s.language})</span>
+          </div>
+          <span class="text-[10px]">Soft Mux</span>
+        `;
+        streamsList.appendChild(div);
+      });
+    }
+
+    // Drag & Drop Setup
+    function setupDragAndDrop() {
+      ['dragenter', 'dragover'].forEach(name => {
+        dropZone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.add("border-primary", "glow-emerald");
+        });
+      });
+
+      ['dragleave', 'drop'].forEach(name => {
+        dropZone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.remove("border-primary", "glow-emerald");
+        });
+      });
+
+      dropZone.addEventListener("drop", (e) => {
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+          handleBrowserFileSelect(files[0]);
+        }
+      });
+
+      browseFilesBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        fileInput.click();
+      });
+
+      fileInput.addEventListener("change", (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          handleBrowserFileSelect(e.target.files[0]);
+        }
+      });
+    }
+
+    // Browser File Upload (Direct Chunked Stream)
+    async function handleBrowserFileSelect(file) {
+      log(`[upload] Uploading: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`, "info");
+      uploadIndicator.classList.remove("hidden");
+      uploadProgressText.textContent = "Uploading: 0%";
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/upload", true);
+      xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          uploadProgressText.textContent = `Uploading: ${percent}%`;
+        }
+      };
+
+      xhr.onload = () => {
+        uploadIndicator.classList.add("hidden");
+        if (xhr.status === 200) {
+          const res = JSON.parse(xhr.responseText);
+          log(`[upload] Completed! Probing streams...`, "success");
+          if (res.probe) {
+            currentFile = {
+              path: res.path,
+              filename: res.filename,
+              probe: res.probe,
+              isUploaded: true
+            };
+            renderFileLoaded(res.probe);
+          }
+        } else {
+          log(`[upload] Error: HTTP ${xhr.status}`, "error");
+          alert("Upload failed. Status: " + xhr.status);
+        }
+      };
+
+      xhr.onerror = () => {
+        uploadIndicator.classList.add("hidden");
+        log(`[upload] Network error during upload`, "error");
+      };
+
+      xhr.send(file);
+    }
+
+    // Quick Sample File Button
+    quickSampleBtn.addEventListener("click", () => {
+      loadLocalFilePath("c:\\Users\\1\\Videos\\Karan\\(Movies4u.Foo).Indias.Got.Latent.S02E09.1080p.Hindi.WEB-DL.2.0.x264.mkv", "(Movies4u.Foo).Indias.Got.Latent.S02E09.1080p.Hindi.WEB-DL.2.0.x264.mkv");
+    });
+
+    // Clear Selected File
+    clearFileBtn.addEventListener("click", () => {
+      currentFile = null;
+      emptyQueueState.classList.remove("hidden");
+      fileLoadedContent.classList.add("hidden");
+      completedCard.classList.add("hidden");
+      queueBadge.textContent = "0 Files Loaded";
+      fileInput.value = "";
+    });
+
+    // Preset Selection
+    function setupPresets() {
+      const cards = document.querySelectorAll(".preset-card");
+      cards.forEach(card => {
+        card.addEventListener("click", () => {
+          cards.forEach(c => {
+            c.classList.remove("border-2", "border-primary", "glow-emerald", "bg-surface-elevated");
+            c.classList.add("border", "border-outline-subtle", "bg-surface-panel");
+            const badge = c.querySelector(".preset-badge");
+            if (badge) badge.remove();
+          });
+
+          card.classList.add("border-2", "border-primary", "glow-emerald", "bg-surface-elevated");
+          card.classList.remove("border-outline-subtle", "bg-surface-panel");
+          
+          const topBadge = document.createElement("span");
+          topBadge.className = "preset-badge font-mono text-[10px] px-2 py-0.5 rounded bg-primary/20 text-primary-bright font-bold border border-primary/40";
+          topBadge.textContent = "SELECTED";
+          card.querySelector("div:first-child").appendChild(topBadge);
+
+          selectedPreset = card.getAttribute("data-preset");
+          log(`[preset] Selected preset profile: ${selectedPreset}`, "info");
+
+          // Adjust target ext
+          let ext = ".mp4";
+          if (selectedPreset === "webm") ext = ".webm";
+          else if (selectedPreset === "audio_mp3") ext = ".mp3";
+          else if (selectedPreset === "gif") ext = ".gif";
+          metricTargetExt.textContent = ext;
+        });
+      });
+    }
+
+    // Resolution Buttons
+    function setupResolutionButtons() {
+      const btns = document.querySelectorAll(".res-btn");
+      btns.forEach(b => {
+        b.addEventListener("click", () => {
+          btns.forEach(x => {
+            x.classList.remove("bg-surface-elevated", "text-primary-bright", "border-primary/40", "font-semibold");
+            x.classList.add("text-text-muted");
+          });
+          b.classList.add("bg-surface-elevated", "text-primary-bright", "border-primary/40", "font-semibold");
+          b.classList.remove("text-text-muted");
+          selectedResolution = b.getAttribute("data-res");
+        });
+      });
+
+      crfSlider.addEventListener("input", (e) => {
+        const val = e.target.value;
+        let desc = "Balanced";
+        if (val <= 10) desc = "Near Lossless";
+        else if (val <= 18) desc = "Visually Lossless";
+        else if (val <= 24) desc = "High Quality";
+        else desc = "High Compression";
+        crfValueDisplay.textContent = `${val} (${desc})`;
+      });
+    }
+
+    // Reset Defaults
+    document.getElementById("resetParamsBtn").addEventListener("click", () => {
+      audioStrategySelect.value = "auto";
+      crfSlider.value = 18;
+      crfValueDisplay.textContent = "18 (Visually Lossless)";
+      faststartToggle.checked = true;
+      trimStartInput.value = "";
+      trimEndInput.value = "";
+      customFilenameInput.value = "";
+    });
+
+    // Start Conversion
+    startConvertBtn.addEventListener("click", async () => {
+      if (!currentFile) {
+        alert("Please load or select a video file first!");
+        return;
+      }
+
+      startConvertBtn.classList.add("hidden");
+      cancelJobBtn.classList.remove("hidden");
+      progressBox.classList.remove("hidden");
+      completedCard.classList.add("hidden");
+
+      progressBar.style.width = "0%";
+      progressPercent.textContent = "0%";
+      progressStatusText.textContent = "Initializing FFmpeg Engine...";
+
+      const payload = {
+        path: currentFile.path,
+        filename: currentFile.filename,
+        preset: selectedPreset,
+        audio_strategy: audioStrategySelect.value,
+        resolution: selectedResolution,
+        crf: parseInt(crfSlider.value),
+        faststart: faststartToggle.checked,
+        trim_start: trimStartInput.value,
+        trim_end: trimEndInput.value,
+        custom_filename: customFilenameInput.value,
+        probe_info: currentFile.probe
+      };
+
+      log(`[start] Initiating conversion: ${currentFile.filename} with preset [${selectedPreset}]`, "info");
+
+      try {
+        const res = await fetch("/api/convert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.job_id) {
+          currentJobId = data.job_id;
+          startPolling(currentJobId);
+        } else {
+          alert("Failed to start conversion: " + (data.error || "Unknown error"));
+          resetControlsAfterJob();
+        }
+      } catch (e) {
+        log(`[error] Could not start conversion: ${e}`, "error");
+        resetControlsAfterJob();
+      }
+    });
+
+    // Polling Job Status
+    function startPolling(jobId) {
+      if (pollInterval) clearInterval(pollInterval);
+
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/jobs/${jobId}`);
+          if (!res.ok) return;
+          const job = await res.json();
+
+          // Update Progress
+          const pct = Math.max(0, Math.min(100, job.progress || 0));
+          progressBar.style.width = `${pct}%`;
+          progressPercent.textContent = `${pct}%`;
+
+          if (job.status === "processing") {
+            progressStatusText.textContent = selectedPreset === "telegram_web_mp4" ? "Remuxing Streams (Zero Loss)..." : "Transcoding Video...";
+            progressSpeed.textContent = `Speed: ${job.speed || "--"}`;
+            metricFps.textContent = `${job.fps || "--"} fps`;
+            metricProcessed.textContent = job.processed_formatted || "--";
+            
+            if (job.eta !== undefined) {
+              const m = Math.floor(job.eta / 60);
+              const s = job.eta % 60;
+              metricEta.textContent = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            }
+          }
+
+          // Update Logs
+          if (job.logs && job.logs.length > 0) {
+            const lastLine = job.logs[job.logs.length - 1];
+            if (logsBody.lastChild && logsBody.lastChild.textContent !== lastLine) {
+              log(lastLine, "info");
+            }
+          }
+
+          // Completed
+          if (job.status === "completed") {
+            clearInterval(pollInterval);
+            progressBar.style.width = "100%";
+            progressPercent.textContent = "100%";
+            progressStatusText.textContent = "Conversion Complete!";
+            log(`[success] Remuxed in ${job.duration_seconds}s! Saved to: ${job.output_filename}`, "success");
+
+            showCompleted(job);
+            resetControlsAfterJob();
+          }
+
+          // Failed or Cancelled
+          if (job.status === "failed" || job.status === "cancelled") {
+            clearInterval(pollInterval);
+            progressStatusText.textContent = job.status === "cancelled" ? "Cancelled" : "Failed";
+            log(`[omni-engine] Job ${job.status}: ${job.error || ''}`, "error");
+            resetControlsAfterJob();
+          }
+
+        } catch (e) {
+          console.error("Polling error", e);
+        }
+      }, 300);
+    }
+
+    function showCompleted(job) {
+      completedCard.classList.remove("hidden");
+      completedFilename.textContent = job.output_filename;
+      completedStats.textContent = `Remuxed in ${job.duration_seconds}s • Output Size: ${job.output_size_formatted} • Format: ${selectedPreset}`;
+
+      downloadLink.href = `/api/download/${job.output_filename}`;
+      openFolderBtn.onclick = async () => {
+        const origHtml = openFolderBtn.innerHTML;
+        openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-secondary-bright text-[16px] animate-spin">sync</span> Opening...';
+        try {
+          const res = await fetch("/api/open-folder", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: job.output_path || job.output_filename })
+          });
+          const data = await res.json();
+          if (data.status === "opened") {
+            openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px]">check</span> Opened!';
+            log(`[folder] Opened folder in Windows Explorer: ${data.path}`, "success");
+          } else {
+            openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-red-400 text-[16px]">error</span> Failed';
+            log(`[folder] Could not open folder: ${data.error}`, "error");
+          }
+        } catch(e) {
+          openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-red-400 text-[16px]">error</span> Error';
+          log(`[folder] Request error: ${e}`, "error");
+        }
+        setTimeout(() => { openFolderBtn.innerHTML = origHtml; }, 2500);
+      };
+
+      previewBtn.onclick = () => {
+        previewModalTitle.textContent = `Preview: ${job.output_filename}`;
+        previewPlayer.src = `/api/preview/${job.output_filename}`;
+        previewModal.classList.remove("hidden");
+        previewPlayer.play().catch(() => {});
+      };
+    }
+
+    function resetControlsAfterJob() {
+      startConvertBtn.classList.remove("hidden");
+      cancelJobBtn.classList.add("hidden");
+    }
+
+    // Cancel Job
+    cancelJobBtn.addEventListener("click", async () => {
+      if (!currentJobId) return;
+      try {
+        await fetch("/api/jobs/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_id: currentJobId })
+        });
+        log("[cancel] Job cancellation requested.", "error");
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    // Preview Modal Close
+    closePreviewModalBtn.addEventListener("click", () => {
+      previewPlayer.pause();
+      previewPlayer.src = "";
+      previewModal.classList.add("hidden");
+    });
+    previewModal.addEventListener("click", (e) => {
+      if (e.target === previewModal) {
+        previewPlayer.pause();
+        previewPlayer.src = "";
+        previewModal.classList.add("hidden");
+      }
+    });
+
+    // Local Files Accordion Toggle
+    toggleLocalFilesBtn.addEventListener("click", () => {
+      localFilesSection.classList.toggle("hidden");
+    });
+    closeLocalFilesBtn.addEventListener("click", () => {
+      localFilesSection.classList.add("hidden");
+    });
+
+    // Open Outputs Folder
+    openOutputsFolderBtn.addEventListener("click", async () => {
+      const orig = openOutputsFolderBtn.innerHTML;
+      openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px] animate-spin">sync</span> <span class="hidden sm:inline">Opening...</span>';
+      try {
+        await fetch("/api/open-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px]">check</span> <span class="hidden sm:inline">Opened!</span>';
+      } catch (e) {}
+      setTimeout(() => { openOutputsFolderBtn.innerHTML = orig; }, 2000);
+    });
+
+    // Logs Actions
+    copyLogsBtn.addEventListener("click", () => {
+      const text = Array.from(logsBody.children).map(c => c.textContent).join("\n");
+      navigator.clipboard.writeText(text);
+      copyLogsBtn.textContent = "Copied!";
+      setTimeout(() => { copyLogsBtn.innerHTML = '<span class="material-symbols-outlined text-[13px]">content_copy</span> Copy'; }, 2000);
+    });
+
+    clearLogsBtn.addEventListener("click", () => {
+      logsBody.innerHTML = '<div class="text-text-dim">[init] Terminal logs cleared.</div>';
+    });
+
+    // Stop Server Action
+    const shutdownServerBtn = document.getElementById("shutdownServerBtn");
+    shutdownServerBtn.addEventListener("click", async () => {
+      if (confirm("Are you sure you want to stop the OmniRemux local server?")) {
+        try {
+          await fetch("/api/shutdown", { method: "POST" });
+        } catch(e) {}
+        document.body.innerHTML = `
+          <div class="min-h-screen flex items-center justify-center p-6 text-center cyber-grid bg-[#070a10] text-[#f8fafc]">
+            <div class="p-8 rounded-2xl bg-slate-900/80 border border-slate-700 max-w-md shadow-2xl">
+              <span class="material-symbols-outlined text-emerald-400 text-[48px] mb-3">power_settings_new</span>
+              <h2 class="text-xl font-bold mb-2">OmniRemux Server Stopped</h2>
+              <p class="text-sm text-slate-400 mb-4">The local server has been shut down safely. You can now close this browser tab.</p>
+              <p class="text-xs text-slate-500 font-mono">To start again, double-click start-converter.bat</p>
+            </div>
+          </div>
+        `;
+      }
+    });
+  </script>
+</body>
+</html>

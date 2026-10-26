@@ -1,0 +1,24 @@
+# Video and media cache directories
+uploads/
+outputs/
+thumbs/
+
+# Raw media files
+*.mkv
+*.mp4
+*.webm
+*.avi
+*.mov
+*.ts
+*.m2ts
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Environment & IDE
+.vscode/
+.idea/
+.env
