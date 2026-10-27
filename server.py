@@ -15,7 +15,13 @@ STATIC_DIR = os.path.join(APP_DIR, "static")
 UPLOADS_DIR = os.path.join(APP_DIR, "uploads")
 OUTPUTS_DIR = os.path.join(APP_DIR, "outputs")
 THUMBS_DIR = os.path.join(APP_DIR, "thumbs")
-WORKSPACE_DIR = os.path.dirname(APP_DIR)
+WORKSPACE_DIR = APP_DIR
+
+VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi", ".webm", ".ts", ".m2ts", ".flv", ".wmv", ".m4v"}
+IGNORED_SCAN_DIRS = {
+    ".git", ".vscode", ".idea", "venv", ".venv", "env",
+    "__pycache__", "node_modules", "thumbs", ".gemini", ".agents"
+}
 
 for d in [STATIC_DIR, UPLOADS_DIR, OUTPUTS_DIR, THUMBS_DIR]:
     os.makedirs(d, exist_ok=True)
@@ -54,6 +60,55 @@ def parse_time_str(time_str):
     except Exception:
         return 0.0
     return 0.0
+
+def parse_fps(fps_str):
+    if not fps_str:
+        return 24.0
+    if isinstance(fps_str, (int, float)):
+        return float(fps_str) if fps_str > 0 else 24.0
+    fps_str = str(fps_str).strip()
+    try:
+        if "/" in fps_str:
+            num_s, den_s = fps_str.split("/", 1)
+            num = float(num_s)
+            den = float(den_s)
+            if den == 0.0 or num == 0.0:
+                return 24.0
+            return round(num / den, 2)
+        val = float(fps_str)
+        return round(val, 2) if val > 0 else 24.0
+    except Exception:
+        return 24.0
+
+def sanitize_filename(filename, default_ext=".mkv"):
+    if not filename or not str(filename).strip():
+        return f"upload_{int(time.time())}{default_ext}"
+    filename = os.path.basename(str(filename).strip())
+    illegal_chars = set('<>:"/\\|?*')
+    cleaned = "".join(c for c in filename if c not in illegal_chars and ord(c) >= 32)
+    cleaned = cleaned.strip(". ")
+    if not cleaned:
+        cleaned = f"upload_{int(time.time())}{default_ext}"
+    return cleaned
+
+def get_unique_output_path(base_name, ext, outputs_dir):
+    candidate_name = f"{base_name}_converted{ext}"
+    candidate_path = os.path.join(outputs_dir, candidate_name)
+    if not os.path.exists(candidate_path):
+        return candidate_name, candidate_path
+
+    counter = 1
+    while os.path.exists(candidate_path):
+        try:
+            with open(candidate_path, "a+b"):
+                pass
+            return candidate_name, candidate_path
+        except (PermissionError, OSError):
+            candidate_name = f"{base_name}_converted_{counter}{ext}"
+            candidate_path = os.path.join(outputs_dir, candidate_name)
+            counter += 1
+
+    return candidate_name, candidate_path
 
 def probe_file(file_path):
     if not os.path.exists(file_path):
@@ -97,7 +152,7 @@ def probe_file(file_path):
                     "profile": s.get("profile", ""),
                     "width": s.get("width"),
                     "height": s.get("height"),
-                    "fps": eval(s.get("r_frame_rate", "24/1")) if "/" in s.get("r_frame_rate", "") else 24,
+                    "fps": parse_fps(s.get("r_frame_rate", "24/1")),
                     "bitrate": int(s.get("bit_rate", 0)) if s.get("bit_rate") else None,
                     "pixel_format": s.get("pix_fmt", "")
                 })
@@ -153,6 +208,56 @@ def probe_file(file_path):
         print("Probe error:", e)
         return None
 
+def build_audio_flags(probe_info, audio_strategy, preset):
+    """
+    Constructs ffmpeg audio mapping and codec arguments based on audio_strategy and preset.
+    Supported strategies:
+      - 'mute': removes audio completely (-an)
+      - 'copy': stream copy without re-encoding
+      - 'aac_stereo': force AAC 256k 2-channel stereo
+      - 'aac_51': force AAC 384k 6-channel 5.1 surround
+      - 'auto': AAC direct copy if available, else transcode to AAC 256k stereo (or opus for webm)
+    """
+    audio_streams = probe_info.get("audio_streams", []) if probe_info else []
+    if not audio_streams or audio_strategy == "mute":
+        return ["-an"]
+
+    first_a = audio_streams[0]
+    first_a_idx = first_a["index"]
+    aac_stream = next((a for a in audio_streams if a.get("is_aac")), None)
+    aac_idx = aac_stream["index"] if aac_stream else None
+
+    # Audio extraction presets handle their own codecs
+    if preset in ["audio_mp3", "audio_aac", "audio_wav"]:
+        return ["-map", f"0:{first_a_idx}"]
+
+    flags = []
+
+    if audio_strategy == "copy":
+        for a in audio_streams:
+            flags.extend(["-map", f"0:{a['index']}"])
+        flags.extend(["-c:a", "copy"])
+    elif audio_strategy == "aac_stereo":
+        flags.extend(["-map", f"0:{first_a_idx}", "-c:a", "aac", "-b:a", "256k", "-ac", "2"])
+    elif audio_strategy == "aac_51":
+        flags.extend(["-map", f"0:{first_a_idx}", "-c:a", "aac", "-b:a", "384k", "-ac", "6"])
+    else:  # "auto" or default
+        if preset == "telegram_web_mp4":
+            if aac_idx is not None:
+                flags.extend(["-map", f"0:{aac_idx}", "-c:a", "copy"])
+            else:
+                flags.extend(["-map", f"0:{first_a_idx}", "-c:a", "aac", "-b:a", "256k", "-ac", "2"])
+        elif preset == "universal_mp4":
+            flags.extend(["-map", f"0:{first_a_idx}", "-c:a", "aac", "-b:a", "192k", "-ac", "2"])
+        elif preset == "webm":
+            flags.extend(["-map", f"0:{first_a_idx}", "-c:a", "libopus", "-b:a", "128k"])
+        elif preset == "gif":
+            flags = ["-an"]
+        else:
+            flags.extend(["-map", f"0:{first_a_idx}", "-c:a", "copy"])
+
+    return flags
+
 def run_conversion_job(job_id, options):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
@@ -185,8 +290,7 @@ def run_conversion_job(job_id, options):
     elif preset == "mkv":
         ext = ".mkv"
         
-    output_filename = f"{base_name}_converted{ext}"
-    output_path = os.path.join(OUTPUTS_DIR, output_filename)
+    output_filename, output_path = get_unique_output_path(base_name, ext, OUTPUTS_DIR)
     
     # Check if user specified audio strategy, resolution, etc.
     audio_strategy = options.get("audio_strategy", "auto")
@@ -196,18 +300,35 @@ def run_conversion_job(job_id, options):
     trim_start = options.get("trim_start")
     trim_end = options.get("trim_end")
     
-    # Find primary video stream & aac audio stream
-    v_idx = 0
-    aac_idx = None
-    first_a_idx = None
-    if probe_info:
-        if probe_info.get("video_streams"):
-            v_idx = probe_info["video_streams"][0]["index"]
-        for a in probe_info.get("audio_streams", []):
-            if first_a_idx is None:
-                first_a_idx = a["index"]
-            if a.get("is_aac") and aac_idx is None:
-                aac_idx = a["index"]
+    # Calculate effective target duration for accurate progress and ETA
+    target_duration = total_duration
+    t_start = parse_time_str(trim_start) if trim_start else 0.0
+    t_end = parse_time_str(trim_end) if trim_end else 0.0
+    if t_end > t_start:
+        target_duration = t_end - t_start
+    elif t_start > 0 and total_duration > t_start:
+        target_duration = total_duration - t_start
+
+    video_streams = probe_info.get("video_streams", []) if probe_info else []
+    audio_streams = probe_info.get("audio_streams", []) if probe_info else []
+    has_video = len(video_streams) > 0
+    has_audio = len(audio_streams) > 0
+
+    if not has_video and not has_audio:
+        with JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = "Input file contains no playable video or audio streams."
+            job["logs"].append("[omni-engine] ERROR: No valid video or audio streams detected.")
+        return
+
+    if preset == "gif" and not has_video:
+        with JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = "Input file contains no video stream to generate a GIF."
+            job["logs"].append("[omni-engine] ERROR: Video stream required for GIF generation.")
+        return
+
+    v_idx = video_streams[0]["index"] if has_video else None
                 
     cmd = ["ffmpeg", "-y"]
     
@@ -221,46 +342,41 @@ def run_conversion_job(job_id, options):
     
     # Command Construction by Preset
     if preset == "telegram_web_mp4":
-        # Zero loss stream remuxing with audio compatibility check
-        cmd.extend(["-map", f"0:{v_idx}"])
-        if aac_idx is not None and audio_strategy in ["auto", "copy"]:
-            cmd.extend(["-map", f"0:{aac_idx}", "-c", "copy"])
-        elif first_a_idx is not None:
-            cmd.extend(["-map", f"0:{first_a_idx}", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k"])
-        else:
-            cmd.extend(["-c:v", "copy"])
-            
-        if faststart:
+        if has_video:
+            cmd.extend(["-map", f"0:{v_idx}", "-c:v", "copy"])
+        cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+        if faststart and ext in [".mp4", ".m4a"]:
             cmd.extend(["-movflags", "+faststart"])
             
     elif preset == "universal_mp4":
-        # High compatibility H.264 + AAC
-        cmd.extend(["-map", f"0:{v_idx}"])
-        vf_filters = []
-        if resolution == "1080p":
-            vf_filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
-        elif resolution == "720p":
-            vf_filters.append("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2")
-        elif resolution == "480p":
-            vf_filters.append("scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2")
+        if has_video:
+            cmd.extend(["-map", f"0:{v_idx}"])
+            vf_filters = []
+            if resolution == "1080p":
+                vf_filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
+            elif resolution == "720p":
+                vf_filters.append("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2")
+            elif resolution == "480p":
+                vf_filters.append("scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2")
+                
+            if vf_filters:
+                cmd.extend(["-vf", ",".join(vf_filters)])
+                
+            cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf)])
             
-        if vf_filters:
-            cmd.extend(["-vf", ",".join(vf_filters)])
-            
-        cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf)])
-        if first_a_idx is not None:
-            cmd.extend(["-map", f"0:{first_a_idx}", "-c:a", "aac", "-b:a", "192k"])
-        if faststart:
+        cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+        if faststart and ext in [".mp4", ".m4a"]:
             cmd.extend(["-movflags", "+faststart"])
             
     elif preset == "webm":
-        cmd.extend(["-map", f"0:{v_idx}", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0"])
-        if first_a_idx is not None:
-            cmd.extend(["-map", f"0:{first_a_idx}", "-c:a", "libopus", "-b:a", "128k"])
+        if has_video:
+            cmd.extend(["-map", f"0:{v_idx}", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0"])
+        cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
             
     elif preset in ["audio_mp3", "audio_aac", "audio_wav"]:
         cmd.extend(["-vn"])
-        if first_a_idx is not None:
+        if has_audio:
+            first_a_idx = audio_streams[0]["index"]
             cmd.extend(["-map", f"0:{first_a_idx}"])
         if preset == "audio_mp3":
             cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
@@ -270,7 +386,9 @@ def run_conversion_job(job_id, options):
             cmd.extend(["-c:a", "pcm_s16le"])
             
     elif preset == "gif":
-        cmd.extend(["-vf", "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"])
+        if has_video:
+            cmd.extend(["-map", f"0:{v_idx}"])
+        cmd.extend(["-vf", "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-an"])
         
     cmd.extend(["-progress", "pipe:1", output_path])
     
@@ -323,11 +441,11 @@ def run_conversion_job(job_id, options):
                         try:
                             cur_time = float(v) / 1000000.0
                             job["cur_time"] = cur_time
-                            if total_duration > 0:
-                                job["progress"] = min(99.5, round((cur_time / total_duration) * 100, 1))
+                            if target_duration > 0:
+                                job["progress"] = min(99.5, round((cur_time / target_duration) * 100, 1))
                                 elapsed = time.time() - job["start_time"]
                                 if cur_time > 0 and elapsed > 0:
-                                    eta = (total_duration - cur_time) / (cur_time / elapsed)
+                                    eta = (target_duration - cur_time) / (cur_time / elapsed)
                                     job["eta"] = max(0, int(eta))
                         except Exception:
                             pass
@@ -350,7 +468,15 @@ def run_conversion_job(job_id, options):
         out_size = os.path.getsize(output_path) if out_exists else 0
         
         with JOBS_LOCK:
-            if proc.returncode == 0 and out_exists:
+            if job.get("cancelled"):
+                job["status"] = "cancelled"
+                job["logs"].append("[omni-engine] Process was cancelled by user.")
+                if out_exists:
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+            elif proc.returncode == 0 and out_exists:
                 job["status"] = "completed"
                 job["progress"] = 100.0
                 job["duration_seconds"] = duration
@@ -361,12 +487,18 @@ def run_conversion_job(job_id, options):
                 job["status"] = "failed"
                 job["error"] = f"FFmpeg exited with code {proc.returncode}"
                 job["logs"].append(f"[omni-engine] ERROR: Process failed with code {proc.returncode}")
+                if out_exists:
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
                 
     except Exception as e:
         with JOBS_LOCK:
-            job["status"] = "failed"
-            job["error"] = str(e)
-            job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
+            if not job.get("cancelled"):
+                job["status"] = "failed"
+                job["error"] = str(e)
+                job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
 
 def reveal_in_file_manager(target_path=None):
     """
@@ -497,22 +629,19 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/local-files":
-            # Scan workspace for video files
             files_found = []
-            for root, dirs, files in os.walk(WORKSPACE_DIR):
-                # skip git and app dirs
-                if "omni-remux" in root or ".git" in root or ".agents" in root:
-                    continue
+            for root, dirs, files in os.walk(APP_DIR):
+                dirs[:] = [d for d in dirs if d not in IGNORED_SCAN_DIRS and not d.startswith(".")]
                 for f in files:
                     ext = os.path.splitext(f)[1].lower()
-                    if ext in [".mkv", ".mp4", ".mov", ".avi", ".webm", ".ts", ".m2ts"]:
+                    if ext in VIDEO_EXTENSIONS:
                         full = os.path.join(root, f)
                         try:
                             stat = os.stat(full)
                             files_found.append({
                                 "filename": f,
                                 "path": full,
-                                "rel_path": os.path.relpath(full, WORKSPACE_DIR),
+                                "rel_path": os.path.relpath(full, APP_DIR),
                                 "size": stat.st_size,
                                 "size_formatted": format_bytes(stat.st_size),
                                 "mtime": stat.st_mtime
@@ -600,7 +729,7 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             else:
                 filename = f"upload_{uuid.uuid4().hex[:8]}.mkv"
                 
-            safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+            safe_filename = sanitize_filename(filename)
             dest_path = os.path.join(UPLOADS_DIR, safe_filename)
             
             content_length = int(self.headers.get("Content-Length", 0))
@@ -688,16 +817,24 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             job_id = data.get("job_id")
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
-                if job and job.get("proc"):
-                    try:
-                        job["proc"].terminate()
-                        job["status"] = "cancelled"
-                        job["logs"].append("[omni-engine] Process cancelled by user.")
-                        self.send_json({"status": "cancelled"})
-                        return
-                    except Exception as e:
-                        self.send_json({"error": str(e)}, status=500)
-                        return
+                if job:
+                    job["cancelled"] = True
+                    job["status"] = "cancelled"
+                    proc = job.get("proc")
+                    if proc:
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                    out_path = job.get("output_path")
+                    if out_path and os.path.exists(out_path):
+                        try:
+                            os.remove(out_path)
+                        except Exception:
+                            pass
+                    job["logs"].append("[omni-engine] Process cancelled by user. Partial files cleaned up.")
+                    self.send_json({"status": "cancelled"})
+                    return
             self.send_json({"status": "not_found"}, status=404)
             return
 
@@ -749,13 +886,46 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
         if file_path.endswith(".webm"): mime = "video/webm"
         elif file_path.endswith(".mkv"): mime = "video/x-matroska"
         elif file_path.endswith(".mp3"): mime = "audio/mpeg"
+        elif file_path.endswith(".m4a"): mime = "audio/mp4"
+        elif file_path.endswith(".wav"): mime = "audio/wav"
         
-        if range_header:
-            range_match = range_header.replace("bytes=", "").split("-")
-            start = int(range_match[0]) if range_match[0] else 0
-            end = int(range_match[1]) if len(range_match) > 1 and range_match[1] else size - 1
-            length = end - start + 1
-            
+        start = 0
+        end = size - 1
+        is_range = False
+
+        if range_header and range_header.strip().startswith("bytes="):
+            raw_range = range_header.strip().replace("bytes=", "").strip()
+            parts = raw_range.split("-", 1)
+            try:
+                if parts[0] == "":
+                    # Suffix range: bytes=-500 (last 500 bytes)
+                    suffix_len = int(parts[1])
+                    start = max(0, size - suffix_len)
+                    end = size - 1
+                    is_range = True
+                elif parts[1] == "":
+                    # Prefix range: bytes=500- (from 500 to EOF)
+                    start = int(parts[0])
+                    end = size - 1
+                    is_range = True
+                else:
+                    # Explicit range: bytes=500-1000
+                    start = int(parts[0])
+                    end = min(int(parts[1]), size - 1)
+                    is_range = True
+
+                if start >= size or start > end or start < 0:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+            except Exception:
+                is_range = False
+
+        length = end - start + 1
+
+        if is_range:
             self.send_response(206)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")

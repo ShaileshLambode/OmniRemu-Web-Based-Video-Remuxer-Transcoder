@@ -370,7 +370,7 @@
             </p>
             <button id="quickSampleBtn" class="text-xs font-mono text-primary-bright hover:underline flex items-center gap-1 mx-auto">
               <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
-              Load India's Got Latent S02E09 (732MB MKV)
+              Pick a video from Workspace
             </button>
           </div>
 
@@ -894,7 +894,7 @@
             <span class="px-1.5 py-0.5 rounded bg-surface-elevated text-text-muted text-[10px]">#0:${s.index} SUB</span>
             <span>${s.codec.toUpperCase()} (${s.language})</span>
           </div>
-          <span class="text-[10px]">Soft Mux</span>
+          <span class="text-[10px]">Pass-through / Omit in Fast Remux</span>
         `;
         streamsList.appendChild(div);
       });
@@ -921,6 +921,9 @@
       dropZone.addEventListener("drop", (e) => {
         const files = e.dataTransfer.files;
         if (files && files.length > 0) {
+          if (files.length > 1) {
+            log(`[drop] ${files.length} files detected. Processing primary file: ${files[0].name}`, "info");
+          }
           handleBrowserFileSelect(files[0]);
         }
       });
@@ -932,6 +935,9 @@
 
       fileInput.addEventListener("change", (e) => {
         if (e.target.files && e.target.files.length > 0) {
+          if (e.target.files.length > 1) {
+            log(`[select] ${e.target.files.length} files selected. Processing primary file: ${e.target.files[0].name}`, "info");
+          }
           handleBrowserFileSelect(e.target.files[0]);
         }
       });
@@ -982,9 +988,22 @@
       xhr.send(file);
     }
 
-    // Quick Sample File Button
-    quickSampleBtn.addEventListener("click", () => {
-      loadLocalFilePath("c:\\Users\\1\\Videos\\Karan\\(Movies4u.Foo).Indias.Got.Latent.S02E09.1080p.Hindi.WEB-DL.2.0.x264.mkv", "(Movies4u.Foo).Indias.Got.Latent.S02E09.1080p.Hindi.WEB-DL.2.0.x264.mkv");
+    // Quick Sample / Local Video Action Button
+    quickSampleBtn.addEventListener("click", async () => {
+      localFilesSection.classList.remove("hidden");
+      localFilesSection.scrollIntoView({ behavior: "smooth" });
+      try {
+        const res = await fetch("/api/local-files");
+        const data = await res.json();
+        if (data.files && data.files.length > 0) {
+          loadLocalFilePath(data.files[0].path, data.files[0].filename);
+          localFilesSection.classList.add("hidden");
+        } else {
+          log("[info] No local videos found in workspace root. Drop a file to begin.", "info");
+        }
+      } catch (e) {
+        console.error(e);
+      }
     });
 
     // Clear Selected File
@@ -1301,7 +1320,7 @@
               <span class="material-symbols-outlined text-emerald-400 text-[48px] mb-3">power_settings_new</span>
               <h2 class="text-xl font-bold mb-2">OmniRemux Server Stopped</h2>
               <p class="text-sm text-slate-400 mb-4">The local server has been shut down safely. You can now close this browser tab.</p>
-              <p class="text-xs text-slate-500 font-mono">To start again, double-click start-converter.bat</p>
+              <p class="text-xs text-slate-500 font-mono">To start again, double-click start.bat</p>
             </div>
           </div>
         `;
