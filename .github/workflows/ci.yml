@@ -43,7 +43,7 @@ jobs:
         python -m unittest discover -s tests -v > test_output.log 2>&1 || TEST_FAILED=1
         cat test_output.log
         if [ "$TEST_FAILED" = "1" ]; then
-          tail -n 25 test_output.log | while IFS= read -r line; do
+          grep -B 2 -A 35 -E "^(FAIL|ERROR):" test_output.log | while IFS= read -r line; do
             echo "::error title=Test Failure::$line"
           done
           exit 1
