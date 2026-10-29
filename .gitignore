@@ -11,6 +11,10 @@ thumbs/
 *.mov
 *.ts
 *.m2ts
+*.mp3
+*.m4a
+*.wav
+*.gif
 
 # Python cache
 __pycache__/
@@ -22,6 +26,7 @@ __pycache__/
 .vscode/
 .idea/
 .env
+.omni.pid
 
 # Temporary recordings and assets
 temp/

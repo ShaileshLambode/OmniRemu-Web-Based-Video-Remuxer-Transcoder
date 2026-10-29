@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <meta name="omni-token" content=""/>
   <title>OmniRemux — Zero-Loss Stream Remuxer & Video Converter</title>
   
   <!-- Google Fonts -->
@@ -332,7 +333,7 @@
             <h4 class="text-sm font-bold text-white mb-0.5">Smooth GIF</h4>
             <p class="text-xs text-text-muted mb-2.5">PaletteGen Clip Loop</p>
             <div class="flex flex-wrap gap-1 text-[10px] font-mono">
-              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">60 FPS</span>
+              <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">24 FPS</span>
               <span class="px-1.5 py-0.5 rounded bg-surface-lowest text-text-muted">Dithered</span>
             </div>
           </div>
@@ -728,6 +729,9 @@
     const previewModalTitle = document.getElementById("previewModalTitle");
     const closePreviewModalBtn = document.getElementById("closePreviewModalBtn");
 
+    // CSRF Session Token
+    const sessionToken = document.querySelector('meta[name="omni-token"]')?.getAttribute('content') || '';
+
     // Initialize
     document.addEventListener("DOMContentLoaded", () => {
       fetchSystemStatus();
@@ -769,24 +773,41 @@
         const data = await res.json();
         localFileCountBadge.textContent = `${data.files.length} found`;
         
-        localFilesList.innerHTML = "";
+        localFilesList.textContent = "";
         if (data.files.length === 0) {
-          localFilesList.innerHTML = `<div class="col-span-full text-xs text-text-dim py-2">No videos found in workspace root.</div>`;
+          const emptyNotice = document.createElement("div");
+          emptyNotice.className = "col-span-full text-xs text-text-dim py-2";
+          emptyNotice.textContent = "No videos found in workspace root.";
+          localFilesList.appendChild(emptyNotice);
           return;
         }
 
         data.files.forEach(f => {
           const item = document.createElement("div");
           item.className = "p-2.5 rounded-xl bg-surface-lowest border border-outline-subtle hover:border-secondary/50 flex items-center justify-between gap-2 cursor-pointer transition-all";
-          item.innerHTML = `
-            <div class="min-w-0">
-              <div class="text-xs font-bold text-white truncate" title="${f.filename}">${f.filename}</div>
-              <div class="text-[10px] font-mono text-text-muted">${f.size_formatted}</div>
-            </div>
-            <button class="px-2.5 py-1 rounded bg-secondary-container hover:bg-secondary/30 text-secondary-bright font-mono text-[10px] font-bold border border-secondary/40 shrink-0">
-              Select
-            </button>
-          `;
+          
+          const infoDiv = document.createElement("div");
+          infoDiv.className = "min-w-0";
+          
+          const nameDiv = document.createElement("div");
+          nameDiv.className = "text-xs font-bold text-white truncate";
+          nameDiv.title = f.filename;
+          nameDiv.textContent = f.filename;
+          
+          const sizeDiv = document.createElement("div");
+          sizeDiv.className = "text-[10px] font-mono text-text-muted";
+          sizeDiv.textContent = f.size_formatted;
+          
+          infoDiv.appendChild(nameDiv);
+          infoDiv.appendChild(sizeDiv);
+
+          const selectBtn = document.createElement("button");
+          selectBtn.className = "px-2.5 py-1 rounded bg-secondary-container hover:bg-secondary/30 text-secondary-bright font-mono text-[10px] font-bold border border-secondary/40 shrink-0";
+          selectBtn.textContent = "Select";
+
+          item.appendChild(infoDiv);
+          item.appendChild(selectBtn);
+
           item.addEventListener("click", () => {
             loadLocalFilePath(f.path, f.filename);
             localFilesSection.classList.add("hidden");
@@ -804,7 +825,10 @@
       try {
         const res = await fetch("/api/probe", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "X-Omni-Token": sessionToken
+          },
           body: JSON.stringify({ path: path, filename: filename })
         });
         const probeData = await res.json();
@@ -850,20 +874,38 @@
       }
 
       // Streams Breakdown
-      streamsList.innerHTML = "";
+      streamsList.textContent = "";
 
       // Video Stream
       probe.video_streams.forEach(v => {
         const div = document.createElement("div");
         div.className = "p-2.5 rounded-lg bg-surface-lowest border border-outline-subtle flex items-center justify-between";
-        div.innerHTML = `
-          <div class="flex items-center gap-2">
-            <span class="px-1.5 py-0.5 rounded bg-primary-container text-primary-bright font-bold text-[10px]">#0:${v.index} VIDEO</span>
-            <span class="text-white font-medium">${v.codec.toUpperCase()} (${v.width}x${v.height})</span>
-            <span class="text-text-muted">• ${Math.round(v.fps)} FPS</span>
-          </div>
-          <span class="px-2 py-0.5 rounded bg-primary/20 text-primary-bright font-bold text-[10px]">COPY (Direct)</span>
-        `;
+
+        const left = document.createElement("div");
+        left.className = "flex items-center gap-2";
+
+        const badge = document.createElement("span");
+        badge.className = "px-1.5 py-0.5 rounded bg-primary-container text-primary-bright font-bold text-[10px]";
+        badge.textContent = `#0:${v.index} VIDEO`;
+
+        const desc = document.createElement("span");
+        desc.className = "text-white font-medium";
+        desc.textContent = `${(v.codec || "").toUpperCase()} (${v.width}x${v.height})`;
+
+        const fps = document.createElement("span");
+        fps.className = "text-text-muted";
+        fps.textContent = `• ${Math.round(v.fps || 0)} FPS`;
+
+        left.appendChild(badge);
+        left.appendChild(desc);
+        left.appendChild(fps);
+
+        const right = document.createElement("span");
+        right.className = "px-2 py-0.5 rounded bg-primary/20 text-primary-bright font-bold text-[10px]";
+        right.textContent = "COPY (Direct)";
+
+        div.appendChild(left);
+        div.appendChild(right);
         streamsList.appendChild(div);
       });
 
@@ -871,17 +913,33 @@
       probe.audio_streams.forEach(a => {
         const div = document.createElement("div");
         div.className = "p-2.5 rounded-lg bg-surface-lowest border border-outline-subtle flex items-center justify-between";
-        const isAac = a.is_aac;
-        div.innerHTML = `
-          <div class="flex items-center gap-2">
-            <span class="px-1.5 py-0.5 rounded ${isAac ? 'bg-primary-container text-primary-bright' : 'bg-secondary-container text-secondary-bright'} font-bold text-[10px]">#0:${a.index} AUDIO</span>
-            <span class="text-white font-medium">${a.codec.toUpperCase()} (${a.channel_layout})</span>
-            <span class="text-text-muted">• ${a.sample_rate} Hz ${a.language ? '['+a.language+']' : ''}</span>
-          </div>
-          <span class="px-2 py-0.5 rounded ${isAac ? 'bg-primary/20 text-primary-bright' : 'bg-yellow-500/20 text-yellow-300'} font-bold text-[10px]">
-            ${isAac ? 'AAC Native' : 'Auto-Transcode AAC'}
-          </span>
-        `;
+        const isAac = !!a.is_aac;
+
+        const left = document.createElement("div");
+        left.className = "flex items-center gap-2";
+
+        const badge = document.createElement("span");
+        badge.className = `px-1.5 py-0.5 rounded ${isAac ? 'bg-primary-container text-primary-bright' : 'bg-secondary-container text-secondary-bright'} font-bold text-[10px]`;
+        badge.textContent = `#0:${a.index} AUDIO`;
+
+        const desc = document.createElement("span");
+        desc.className = "text-white font-medium";
+        desc.textContent = `${(a.codec || "").toUpperCase()} (${a.channel_layout || "stereo"})`;
+
+        const meta = document.createElement("span");
+        meta.className = "text-text-muted";
+        meta.textContent = `• ${a.sample_rate || 48000} Hz ${a.language ? '['+a.language+']' : ''}`;
+
+        left.appendChild(badge);
+        left.appendChild(desc);
+        left.appendChild(meta);
+
+        const right = document.createElement("span");
+        right.className = `px-2 py-0.5 rounded ${isAac ? 'bg-primary/20 text-primary-bright' : 'bg-yellow-500/20 text-yellow-300'} font-bold text-[10px]`;
+        right.textContent = isAac ? 'AAC Native' : 'Auto-Transcode AAC';
+
+        div.appendChild(left);
+        div.appendChild(right);
         streamsList.appendChild(div);
       });
 
@@ -889,13 +947,26 @@
       probe.subtitle_streams.forEach(s => {
         const div = document.createElement("div");
         div.className = "p-2 rounded-lg bg-surface-lowest border border-outline-subtle flex items-center justify-between text-text-dim";
-        div.innerHTML = `
-          <div class="flex items-center gap-2">
-            <span class="px-1.5 py-0.5 rounded bg-surface-elevated text-text-muted text-[10px]">#0:${s.index} SUB</span>
-            <span>${s.codec.toUpperCase()} (${s.language})</span>
-          </div>
-          <span class="text-[10px]">Pass-through / Omit in Fast Remux</span>
-        `;
+
+        const left = document.createElement("div");
+        left.className = "flex items-center gap-2";
+
+        const badge = document.createElement("span");
+        badge.className = "px-1.5 py-0.5 rounded bg-surface-elevated text-text-muted text-[10px]";
+        badge.textContent = `#0:${s.index} SUB`;
+
+        const desc = document.createElement("span");
+        desc.textContent = `${(s.codec || "").toUpperCase()} (${s.language || "und"})`;
+
+        left.appendChild(badge);
+        left.appendChild(desc);
+
+        const right = document.createElement("span");
+        right.className = "text-[10px]";
+        right.textContent = "Pass-through / Omit in Fast Remux";
+
+        div.appendChild(left);
+        div.appendChild(right);
         streamsList.appendChild(div);
       });
     }
@@ -952,6 +1023,7 @@
       const xhr = new XMLHttpRequest();
       xhr.open("POST", "/api/upload", true);
       xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+      xhr.setRequestHeader("X-Omni-Token", sessionToken);
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -1121,7 +1193,10 @@
       try {
         const res = await fetch("/api/convert", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "X-Omni-Token": sessionToken
+          },
           body: JSON.stringify(payload)
         });
         const data = await res.json();
@@ -1212,16 +1287,19 @@
         try {
           const res = await fetch("/api/open-folder", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-Omni-Token": sessionToken
+            },
             body: JSON.stringify({ path: job.output_path || job.output_filename })
           });
           const data = await res.json();
-          if (data.status === "opened") {
+          if (res.ok && data.status === "opened") {
             openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px]">check</span> Opened!';
-            log(`[folder] Opened folder in Windows Explorer: ${data.path}`, "success");
+            log(`[folder] Opened folder in Explorer: ${data.path}`, "success");
           } else {
             openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-red-400 text-[16px]">error</span> Failed';
-            log(`[folder] Could not open folder: ${data.error}`, "error");
+            log(`[folder] Could not open folder: ${data.error || "Unknown error"}`, "error");
           }
         } catch(e) {
           openFolderBtn.innerHTML = '<span class="material-symbols-outlined text-red-400 text-[16px]">error</span> Error';
@@ -1249,7 +1327,10 @@
       try {
         await fetch("/api/jobs/cancel", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "X-Omni-Token": sessionToken
+          },
           body: JSON.stringify({ job_id: currentJobId })
         });
         log("[cancel] Job cancellation requested.", "error");
@@ -1285,13 +1366,23 @@
       const orig = openOutputsFolderBtn.innerHTML;
       openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px] animate-spin">sync</span> <span class="hidden sm:inline">Opening...</span>';
       try {
-        await fetch("/api/open-folder", {
+        const res = await fetch("/api/open-folder", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "X-Omni-Token": sessionToken
+          },
           body: JSON.stringify({})
         });
-        openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px]">check</span> <span class="hidden sm:inline">Opened!</span>';
-      } catch (e) {}
+        const data = await res.json();
+        if (res.ok && data.status === "opened") {
+          openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-primary text-[16px]">check</span> <span class="hidden sm:inline">Opened!</span>';
+        } else {
+          openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-red-400 text-[16px]">error</span> <span class="hidden sm:inline">Failed</span>';
+        }
+      } catch (e) {
+        openOutputsFolderBtn.innerHTML = '<span class="material-symbols-outlined text-red-400 text-[16px]">error</span> <span class="hidden sm:inline">Error</span>';
+      }
       setTimeout(() => { openOutputsFolderBtn.innerHTML = orig; }, 2000);
     });
 
@@ -1312,7 +1403,10 @@
     shutdownServerBtn.addEventListener("click", async () => {
       if (confirm("Are you sure you want to stop the OmniRemux local server?")) {
         try {
-          await fetch("/api/shutdown", { method: "POST" });
+          await fetch("/api/shutdown", { 
+            method: "POST",
+            headers: { "X-Omni-Token": sessionToken }
+          });
         } catch(e) {}
         document.body.innerHTML = `
           <div class="min-h-screen flex items-center justify-center p-6 text-center cyber-grid bg-[#070a10] text-[#f8fafc]">

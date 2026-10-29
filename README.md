@@ -23,7 +23,7 @@
 2. **Universal MP4 (H.264 / AAC)**: Maximum compatibility across legacy devices, TVs, and mobile screens.
 3. **WebM Stream (VP9 / Opus)**: Web and Discord-optimized container.
 4. **Extract Audio (MP3 320kbps / AAC / WAV)**: 1-click pure soundtrack extraction.
-5. **Smooth 60 FPS GIF**: PaletteGen high-framerate animated clips.
+5. **Smooth 24 FPS Animated GIF**: PaletteGen high-quality animated clips.
 
 ---
 
@@ -59,14 +59,33 @@
 omni-remux/
 ├── server.py           # Multi-threaded Python server & FFmpeg engine
 ├── start.bat           # 1-click Windows launcher
-├── stop.bat            # 1-click Windows stop script
+├── stop.bat            # Windows stop script with PID tracking
+├── LICENSE             # MIT License
 ├── static/
 │   └── index.html      # Cyber-workstation single-page application
+├── tests/              # Automated test suite (unit, security, audio matrix, probe)
+│   └── fixtures/       # Synthetic test media fixtures generator
 ├── uploads/            # Temporary upload directory (gitignored)
 ├── outputs/            # Converted video files (gitignored)
 ├── thumbs/             # Extracted video thumbnail cache (gitignored)
 └── README.md
 ```
+
+---
+
+## 🧪 Automated Testing
+
+OmniRemux includes an automated test suite covering origin validation, CSRF tokens, audio matrix configurations, stream probing, and FFmpeg conversion pipelines.
+
+1. Generate synthetic test media fixtures:
+   ```bash
+   python ./tests/fixtures/make_test_media.py
+   ```
+
+2. Run the full test suite:
+   ```bash
+   python -m unittest discover -s tests -v
+   ```
 
 ---
 

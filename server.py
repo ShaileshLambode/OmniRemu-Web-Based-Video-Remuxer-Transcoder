@@ -7,6 +7,8 @@ import shutil
 import urllib.parse
 import subprocess
 import threading
+import secrets
+import atexit
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Base Directories
@@ -20,11 +22,38 @@ WORKSPACE_DIR = APP_DIR
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi", ".webm", ".ts", ".m2ts", ".flv", ".wmv", ".m4v"}
 IGNORED_SCAN_DIRS = {
     ".git", ".vscode", ".idea", "venv", ".venv", "env",
-    "__pycache__", "node_modules", "thumbs", ".gemini", ".agents"
+    "__pycache__", "node_modules", "thumbs", ".gemini", ".agents",
+    "tests", "docs"
 }
 
 for d in [STATIC_DIR, UPLOADS_DIR, OUTPUTS_DIR, THUMBS_DIR]:
     os.makedirs(d, exist_ok=True)
+
+# Security and Concurrency Configuration
+SERVER_PORT = 5050
+SESSION_TOKEN = secrets.token_hex(16)
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB limit
+MAX_CONCURRENT_JOBS = 2
+JOB_SEMAPHORE = threading.Semaphore(MAX_CONCURRENT_JOBS)
+MAX_JOB_HISTORY = 50
+
+PID_FILE = os.path.join(APP_DIR, ".omni.pid")
+
+def write_pid_file():
+    try:
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
+def remove_pid_file():
+    try:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+    except Exception:
+        pass
+
+atexit.register(remove_pid_file)
 
 # In-memory Job Tracker
 JOBS = {}
@@ -74,7 +103,8 @@ def parse_fps(fps_str):
             den = float(den_s)
             if den == 0.0 or num == 0.0:
                 return 24.0
-            return round(num / den, 2)
+            val = round(num / den, 2)
+            return val if val > 0 else 24.0
         val = float(fps_str)
         return round(val, 2) if val > 0 else 24.0
     except Exception:
@@ -91,7 +121,49 @@ def sanitize_filename(filename, default_ext=".mkv"):
         cleaned = f"upload_{int(time.time())}{default_ext}"
     return cleaned
 
+def resolve_safe_path(target_path, base_dir=None):
+    """
+    Confines target_path within base_dir (defaults to APP_DIR).
+    Returns resolved absolute path if safe and exists, or None if invalid/escaping.
+    Rejects UNC paths, directory traversal, drive letter escapes, and missing files.
+    """
+    if not target_path or not str(target_path).strip():
+        return None
+    raw = str(target_path).strip()
+
+    # Reject Windows UNC network paths
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        return None
+
+    allowed_root = os.path.realpath(base_dir or APP_DIR)
+
+    # If target_path is not absolute, check inside UPLOADS_DIR, OUTPUTS_DIR, or APP_DIR
+    if not os.path.isabs(raw):
+        for d in [UPLOADS_DIR, OUTPUTS_DIR, allowed_root]:
+            candidate = os.path.realpath(os.path.join(d, raw))
+            try:
+                if os.path.commonpath([allowed_root, candidate]) == allowed_root and os.path.exists(candidate):
+                    return candidate
+            except ValueError:
+                pass
+        return None
+
+    resolved = os.path.realpath(raw)
+    try:
+        if os.path.commonpath([allowed_root, resolved]) != allowed_root:
+            return None
+    except ValueError:
+        return None
+
+    return resolved if os.path.exists(resolved) else None
+
 def get_unique_output_path(base_name, ext, outputs_dir):
+    base_name = os.path.basename(str(base_name).strip())
+    illegal_chars = set('<>:"/\\|?*')
+    base_name = "".join(c for c in base_name if c not in illegal_chars and ord(c) >= 32).strip(". ")
+    if not base_name:
+        base_name = f"output_{int(time.time())}"
+
     candidate_name = f"{base_name}_converted{ext}"
     candidate_path = os.path.join(outputs_dir, candidate_name)
     if not os.path.exists(candidate_path):
@@ -99,14 +171,9 @@ def get_unique_output_path(base_name, ext, outputs_dir):
 
     counter = 1
     while os.path.exists(candidate_path):
-        try:
-            with open(candidate_path, "a+b"):
-                pass
-            return candidate_name, candidate_path
-        except (PermissionError, OSError):
-            candidate_name = f"{base_name}_converted_{counter}{ext}"
-            candidate_path = os.path.join(outputs_dir, candidate_name)
-            counter += 1
+        candidate_name = f"{base_name}_converted ({counter}){ext}"
+        candidate_path = os.path.join(outputs_dir, candidate_name)
+        counter += 1
 
     return candidate_name, candidate_path
 
@@ -263,261 +330,265 @@ def run_conversion_job(job_id, options):
         job = JOBS.get(job_id)
     if not job:
         return
-        
-    input_path = options.get("input_path")
-    preset = options.get("preset", "telegram_web_mp4")
-    custom_name = options.get("custom_filename")
-    
-    base_name = os.path.splitext(os.path.basename(input_path))[0]
-    if custom_name and custom_name.strip():
-        base_name = os.path.splitext(custom_name.strip())[0]
-        
-    probe_info = options.get("probe_info") or probe_file(input_path)
-    total_duration = probe_info.get("duration", 0.0) if probe_info else 0.0
-    
-    # Determine output extension and ffmpeg flags
-    ext = ".mp4"
-    if preset == "webm":
-        ext = ".webm"
-    elif preset == "audio_mp3":
-        ext = ".mp3"
-    elif preset == "audio_aac":
-        ext = ".m4a"
-    elif preset == "audio_wav":
-        ext = ".wav"
-    elif preset == "gif":
-        ext = ".gif"
-    elif preset == "mkv":
-        ext = ".mkv"
-        
-    output_filename, output_path = get_unique_output_path(base_name, ext, OUTPUTS_DIR)
-    
-    # Check if user specified audio strategy, resolution, etc.
-    audio_strategy = options.get("audio_strategy", "auto")
-    resolution = options.get("resolution", "original")
-    crf = options.get("crf", 18)
-    faststart = options.get("faststart", True)
-    trim_start = options.get("trim_start")
-    trim_end = options.get("trim_end")
-    
-    # Calculate effective target duration for accurate progress and ETA
-    target_duration = total_duration
-    t_start = parse_time_str(trim_start) if trim_start else 0.0
-    t_end = parse_time_str(trim_end) if trim_end else 0.0
-    if t_end > t_start:
-        target_duration = t_end - t_start
-    elif t_start > 0 and total_duration > t_start:
-        target_duration = total_duration - t_start
 
-    video_streams = probe_info.get("video_streams", []) if probe_info else []
-    audio_streams = probe_info.get("audio_streams", []) if probe_info else []
-    has_video = len(video_streams) > 0
-    has_audio = len(audio_streams) > 0
-
-    if not has_video and not has_audio:
-        with JOBS_LOCK:
-            job["status"] = "failed"
-            job["error"] = "Input file contains no playable video or audio streams."
-            job["logs"].append("[omni-engine] ERROR: No valid video or audio streams detected.")
-        return
-
-    if preset == "gif" and not has_video:
-        with JOBS_LOCK:
-            job["status"] = "failed"
-            job["error"] = "Input file contains no video stream to generate a GIF."
-            job["logs"].append("[omni-engine] ERROR: Video stream required for GIF generation.")
-        return
-
-    v_idx = video_streams[0]["index"] if has_video else None
-                
-    cmd = ["ffmpeg", "-y"]
-    
-    # Trim parameters before input for fast seek
-    if trim_start and trim_start.strip():
-        cmd.extend(["-ss", trim_start.strip()])
-    if trim_end and trim_end.strip():
-        cmd.extend(["-to", trim_end.strip()])
-        
-    cmd.extend(["-i", input_path])
-    
-    # Command Construction by Preset
-    if preset == "telegram_web_mp4":
-        if has_video:
-            cmd.extend(["-map", f"0:{v_idx}", "-c:v", "copy"])
-        cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
-        if faststart and ext in [".mp4", ".m4a"]:
-            cmd.extend(["-movflags", "+faststart"])
-            
-    elif preset == "universal_mp4":
-        if has_video:
-            cmd.extend(["-map", f"0:{v_idx}"])
-            vf_filters = []
-            if resolution == "1080p":
-                vf_filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
-            elif resolution == "720p":
-                vf_filters.append("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2")
-            elif resolution == "480p":
-                vf_filters.append("scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2")
-                
-            if vf_filters:
-                cmd.extend(["-vf", ",".join(vf_filters)])
-                
-            cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf)])
-            
-        cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
-        if faststart and ext in [".mp4", ".m4a"]:
-            cmd.extend(["-movflags", "+faststart"])
-            
-    elif preset == "webm":
-        if has_video:
-            cmd.extend(["-map", f"0:{v_idx}", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0"])
-        cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
-            
-    elif preset in ["audio_mp3", "audio_aac", "audio_wav"]:
-        cmd.extend(["-vn"])
-        if has_audio:
-            first_a_idx = audio_streams[0]["index"]
-            cmd.extend(["-map", f"0:{first_a_idx}"])
-        if preset == "audio_mp3":
-            cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
-        elif preset == "audio_aac":
-            cmd.extend(["-c:a", "aac", "-b:a", "256k"])
-        elif preset == "audio_wav":
-            cmd.extend(["-c:a", "pcm_s16le"])
-            
-    elif preset == "gif":
-        if has_video:
-            cmd.extend(["-map", f"0:{v_idx}"])
-        cmd.extend(["-vf", "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-an"])
-        
-    cmd.extend(["-progress", "pipe:1", output_path])
-    
-    log_cmd_str = " ".join([f'"{x}"' if " " in x else x for x in cmd])
-    
-    with JOBS_LOCK:
-        job["status"] = "processing"
-        job["start_time"] = time.time()
-        job["cmd"] = log_cmd_str
-        job["output_filename"] = output_filename
-        job["output_path"] = output_path
-        job["logs"].append(f"[omni-engine] Executing: {log_cmd_str}")
-        
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            bufsize=1,
-            encoding="utf-8",
-            errors="replace"
-        )
-        with JOBS_LOCK:
-            job["proc"] = proc
-            
-        def read_stderr(p):
-            for line in p.stderr:
-                line = line.strip()
-                if line:
-                    with JOBS_LOCK:
-                        job["logs"].append(line)
-                        if len(job["logs"]) > 300:
-                            job["logs"].pop(0)
-                            
-        t_err = threading.Thread(target=read_stderr, args=(proc,))
-        t_err.daemon = True
-        t_err.start()
-        
-        # Read progress from stdout
-        for line in proc.stdout:
-            line = line.strip()
-            if "=" in line:
-                k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                
-                with JOBS_LOCK:
-                    if k == "out_time_us":
-                        try:
-                            cur_time = float(v) / 1000000.0
-                            job["cur_time"] = cur_time
-                            if target_duration > 0:
-                                job["progress"] = min(99.5, round((cur_time / target_duration) * 100, 1))
-                                elapsed = time.time() - job["start_time"]
-                                if cur_time > 0 and elapsed > 0:
-                                    eta = (target_duration - cur_time) / (cur_time / elapsed)
-                                    job["eta"] = max(0, int(eta))
-                        except Exception:
-                            pass
-                    elif k == "fps":
-                        job["fps"] = v
-                    elif k == "speed":
-                        job["speed"] = v
-                    elif k == "total_size":
-                        try:
-                            job["processed_bytes"] = int(v)
-                            job["processed_formatted"] = format_bytes(int(v))
-                        except Exception:
-                            pass
-                            
-        proc.wait()
-        t_err.join(timeout=1.0)
-        
-        duration = round(time.time() - job["start_time"], 2)
-        out_exists = os.path.exists(output_path)
-        out_size = os.path.getsize(output_path) if out_exists else 0
-        
+    with JOB_SEMAPHORE:
         with JOBS_LOCK:
             if job.get("cancelled"):
-                job["status"] = "cancelled"
-                job["logs"].append("[omni-engine] Process was cancelled by user.")
-                if out_exists:
-                    try:
-                        os.remove(output_path)
-                    except Exception:
-                        pass
-            elif proc.returncode == 0 and out_exists:
-                job["status"] = "completed"
-                job["progress"] = 100.0
-                job["duration_seconds"] = duration
-                job["output_size"] = out_size
-                job["output_size_formatted"] = format_bytes(out_size)
-                job["logs"].append(f"[omni-engine] Conversion SUCCESS in {duration}s! Output size: {format_bytes(out_size)}")
-            else:
+                return
+            job["status"] = "processing"
+            job["start_time"] = time.time()
+            
+        input_path = options.get("input_path")
+        preset = options.get("preset", "telegram_web_mp4")
+        custom_name = options.get("custom_filename")
+    
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        if custom_name and custom_name.strip():
+            base_name = os.path.splitext(custom_name.strip())[0]
+        
+        probe_info = options.get("probe_info") or probe_file(input_path)
+        total_duration = probe_info.get("duration", 0.0) if probe_info else 0.0
+    
+        # Determine output extension and ffmpeg flags
+        ext = ".mp4"
+        if preset == "webm":
+            ext = ".webm"
+        elif preset == "audio_mp3":
+            ext = ".mp3"
+        elif preset == "audio_aac":
+            ext = ".m4a"
+        elif preset == "audio_wav":
+            ext = ".wav"
+        elif preset == "gif":
+            ext = ".gif"
+        elif preset == "mkv":
+            ext = ".mkv"
+        
+        output_filename, output_path = get_unique_output_path(base_name, ext, OUTPUTS_DIR)
+    
+        # Check if user specified audio strategy, resolution, etc.
+        audio_strategy = options.get("audio_strategy", "auto")
+        resolution = options.get("resolution", "original")
+        crf = options.get("crf", 18)
+        faststart = options.get("faststart", True)
+        trim_start = options.get("trim_start")
+        trim_end = options.get("trim_end")
+    
+        # Calculate effective target duration for accurate progress and ETA
+        target_duration = total_duration
+        t_start = parse_time_str(trim_start) if trim_start else 0.0
+        t_end = parse_time_str(trim_end) if trim_end else 0.0
+        if t_end > t_start:
+            target_duration = t_end - t_start
+        elif t_start > 0 and total_duration > t_start:
+            target_duration = total_duration - t_start
+
+        video_streams = probe_info.get("video_streams", []) if probe_info else []
+        audio_streams = probe_info.get("audio_streams", []) if probe_info else []
+        has_video = len(video_streams) > 0
+        has_audio = len(audio_streams) > 0
+
+        if not has_video and not has_audio:
+            with JOBS_LOCK:
                 job["status"] = "failed"
-                job["error"] = f"FFmpeg exited with code {proc.returncode}"
-                job["logs"].append(f"[omni-engine] ERROR: Process failed with code {proc.returncode}")
-                if out_exists:
-                    try:
-                        os.remove(output_path)
-                    except Exception:
-                        pass
+                job["error"] = "Input file contains no playable video or audio streams."
+                job["logs"].append("[omni-engine] ERROR: No valid video or audio streams detected.")
+            return
+
+        if preset == "gif" and not has_video:
+            with JOBS_LOCK:
+                job["status"] = "failed"
+                job["error"] = "Input file contains no video stream to generate a GIF."
+                job["logs"].append("[omni-engine] ERROR: Video stream required for GIF generation.")
+            return
+
+        v_idx = video_streams[0]["index"] if has_video else None
                 
-    except Exception as e:
+        cmd = ["ffmpeg", "-y"]
+    
+        # Trim parameters before input for fast seek
+        if trim_start and trim_start.strip():
+            cmd.extend(["-ss", trim_start.strip()])
+        if trim_end and trim_end.strip():
+            cmd.extend(["-to", trim_end.strip()])
+        
+        cmd.extend(["-i", input_path])
+    
+        # Command Construction by Preset
+        if preset == "telegram_web_mp4":
+            if has_video:
+                cmd.extend(["-map", f"0:{v_idx}", "-c:v", "copy"])
+            cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+            if faststart and ext in [".mp4", ".m4a"]:
+                cmd.extend(["-movflags", "+faststart"])
+            
+        elif preset == "universal_mp4":
+            if has_video:
+                cmd.extend(["-map", f"0:{v_idx}"])
+                vf_filters = []
+                if resolution == "1080p":
+                    vf_filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
+                elif resolution == "720p":
+                    vf_filters.append("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2")
+                elif resolution == "480p":
+                    vf_filters.append("scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2")
+                
+                if vf_filters:
+                    cmd.extend(["-vf", ",".join(vf_filters)])
+                
+                cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf)])
+            
+            cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+            if faststart and ext in [".mp4", ".m4a"]:
+                cmd.extend(["-movflags", "+faststart"])
+            
+        elif preset == "webm":
+            if has_video:
+                cmd.extend(["-map", f"0:{v_idx}", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0"])
+            cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+            
+        elif preset in ["audio_mp3", "audio_aac", "audio_wav"]:
+            cmd.extend(["-vn"])
+            if has_audio:
+                first_a_idx = audio_streams[0]["index"]
+                cmd.extend(["-map", f"0:{first_a_idx}"])
+            if preset == "audio_mp3":
+                cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
+            elif preset == "audio_aac":
+                cmd.extend(["-c:a", "aac", "-b:a", "256k"])
+            elif preset == "audio_wav":
+                cmd.extend(["-c:a", "pcm_s16le"])
+            
+        elif preset == "gif":
+            if has_video:
+                cmd.extend(["-map", f"0:{v_idx}"])
+            cmd.extend(["-vf", "fps=24,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-an"])
+        
+        cmd.extend(["-progress", "pipe:1", output_path])
+    
+        log_cmd_str = " ".join([f'"{x}"' if " " in x else x for x in cmd])
+    
         with JOBS_LOCK:
-            if not job.get("cancelled"):
-                job["status"] = "failed"
-                job["error"] = str(e)
-                job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
+            job["cmd"] = log_cmd_str
+            job["output_filename"] = output_filename
+            job["output_path"] = output_path
+            job["logs"].append(f"[omni-engine] Executing: {log_cmd_str}")
+        
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1,
+                encoding="utf-8",
+                errors="replace"
+            )
+            with JOBS_LOCK:
+                job["proc"] = proc
+            
+            def read_stderr(p):
+                for line in p.stderr:
+                    line = line.strip()
+                    if line:
+                        with JOBS_LOCK:
+                            job["logs"].append(line)
+                            if len(job["logs"]) > 300:
+                                job["logs"].pop(0)
+                            
+            t_err = threading.Thread(target=read_stderr, args=(proc,))
+            t_err.daemon = True
+            t_err.start()
+        
+            # Read progress from stdout
+            for line in proc.stdout:
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                
+                    with JOBS_LOCK:
+                        if k == "out_time_us":
+                            try:
+                                cur_time = float(v) / 1000000.0
+                                job["cur_time"] = cur_time
+                                if target_duration > 0:
+                                    job["progress"] = min(99.5, round((cur_time / target_duration) * 100, 1))
+                                    elapsed = time.time() - job["start_time"]
+                                    if cur_time > 0 and elapsed > 0:
+                                        eta = (target_duration - cur_time) / (cur_time / elapsed)
+                                        job["eta"] = max(0, int(eta))
+                            except Exception:
+                                pass
+                        elif k == "fps":
+                            job["fps"] = v
+                        elif k == "speed":
+                            job["speed"] = v
+                        elif k == "total_size":
+                            try:
+                                job["processed_bytes"] = int(v)
+                                job["processed_formatted"] = format_bytes(int(v))
+                            except Exception:
+                                pass
+                            
+            proc.wait()
+            t_err.join(timeout=1.0)
+        
+            duration = round(time.time() - job["start_time"], 2)
+            out_exists = os.path.exists(output_path)
+            out_size = os.path.getsize(output_path) if out_exists else 0
+        
+            with JOBS_LOCK:
+                if job.get("cancelled"):
+                    job["status"] = "cancelled"
+                    job["logs"].append("[omni-engine] Process was cancelled by user.")
+                    if out_exists:
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                elif proc.returncode == 0 and out_exists:
+                    job["status"] = "completed"
+                    job["progress"] = 100.0
+                    job["duration_seconds"] = duration
+                    job["output_size"] = out_size
+                    job["output_size_formatted"] = format_bytes(out_size)
+                    job["logs"].append(f"[omni-engine] Conversion SUCCESS in {duration}s! Output size: {format_bytes(out_size)}")
+                else:
+                    job["status"] = "failed"
+                    job["error"] = f"FFmpeg exited with code {proc.returncode}"
+                    job["logs"].append(f"[omni-engine] ERROR: Process failed with code {proc.returncode}")
+                    if out_exists:
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                
+        except Exception as e:
+            with JOBS_LOCK:
+                if not job.get("cancelled"):
+                    job["status"] = "failed"
+                    job["error"] = str(e)
+                    job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
 
 def reveal_in_file_manager(target_path=None):
     """
     Reveals the target file in Windows Explorer (or system file manager),
     highlighting the file if it exists, or opening the folder.
-    Handles spaces and special characters robustly across Windows, macOS, and Linux.
+    Confined strictly within safe workspace boundaries.
     """
-    if not target_path or not str(target_path).strip():
+    if target_path and str(target_path).strip():
+        safe_path = resolve_safe_path(target_path)
+        if safe_path:
+            target_path = safe_path
+        else:
+            alt_path = os.path.join(OUTPUTS_DIR, os.path.basename(str(target_path).strip()))
+            target_path = alt_path if os.path.exists(alt_path) else OUTPUTS_DIR
+    else:
         target_path = OUTPUTS_DIR
 
     target_path = os.path.normpath(os.path.abspath(target_path))
-
-    # If the file does not exist at target_path, check inside OUTPUTS_DIR
-    if not os.path.exists(target_path):
-        alt_path = os.path.join(OUTPUTS_DIR, os.path.basename(target_path))
-        if os.path.exists(alt_path):
-            target_path = alt_path
-        else:
-            target_path = OUTPUTS_DIR
 
     if sys.platform == "win32":
         if os.path.isfile(target_path):
@@ -579,13 +650,63 @@ def reveal_in_file_manager(target_path=None):
             return False, str(e)
 
 class OmniRequestHandler(BaseHTTPRequestHandler):
+    @property
+    def current_port(self):
+        return getattr(self.server, "server_port", SERVER_PORT)
+
+    def is_trusted_host(self):
+        host = self.headers.get("Host")
+        if not host:
+            return True
+        host = host.strip().lower()
+        if host.startswith("["):
+            bracket_end = host.find("]")
+            host_name = host[1:bracket_end] if bracket_end != -1 else host
+        else:
+            host_name = host.split(":")[0].strip()
+        return host_name in ["localhost", "127.0.0.1", "::1"]
+
+    def is_trusted_origin(self):
+        if not self.is_trusted_host():
+            return False
+
+        origin = self.headers.get("Origin")
+        if not origin:
+            # Same-origin direct navigation or local tools without Origin header
+            return True
+
+        try:
+            parsed = urllib.parse.urlparse(origin)
+            orig_host = (parsed.hostname or "").strip().lower()
+            orig_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            if orig_host in ["localhost", "127.0.0.1"] and orig_port == self.current_port:
+                return True
+        except Exception:
+            return False
+
+        return False
+
+    def validate_session_token(self):
+        token = self.headers.get("X-Omni-Token")
+        if not token:
+            return False
+        return secrets.compare_digest(token, SESSION_TOKEN)
+
     def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        origin = self.headers.get("Origin")
+        if origin and self.is_trusted_origin():
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Omni-Token, X-File-Name, Range")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
         super().end_headers()
 
     def do_OPTIONS(self):
+        if not self.is_trusted_origin():
+            self.send_response(403)
+            self.end_headers()
+            return
         self.send_response(204)
         self.end_headers()
 
@@ -604,7 +725,19 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
         if path == "/" or path == "/index.html":
             file_path = os.path.join(STATIC_DIR, "index.html")
             if os.path.exists(file_path):
-                self.serve_file(file_path, "text/html; charset=utf-8")
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # Inject unpredictable CSRF session token
+                content = content.replace(
+                    '<meta name="omni-token" content=""/>',
+                    f'<meta name="omni-token" content="{SESSION_TOKEN}"/>'
+                )
+                body = content.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -629,6 +762,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/local-files":
+            if not self.is_trusted_origin():
+                self.send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+                return
+
             files_found = []
             for root, dirs, files in os.walk(APP_DIR):
                 dirs[:] = [d for d in dirs if d not in IGNORED_SCAN_DIRS and not d.startswith(".")]
@@ -653,6 +790,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path.startswith("/api/jobs/"):
+            if not self.is_trusted_origin():
+                self.send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+                return
+
             job_id = path.replace("/api/jobs/", "").strip("/")
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
@@ -667,8 +808,9 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/thumbnail/"):
             thumb_name = os.path.basename(path.replace("/api/thumbnail/", ""))
             thumb_path = os.path.join(THUMBS_DIR, thumb_name)
-            if os.path.exists(thumb_path):
-                self.serve_file(thumb_path, "image/jpeg")
+            safe_thumb = resolve_safe_path(thumb_path, THUMBS_DIR)
+            if safe_thumb and os.path.exists(safe_thumb):
+                self.serve_file(safe_thumb, "image/jpeg")
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -676,11 +818,9 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
 
         elif path.startswith("/api/preview/"):
             fname = os.path.basename(path.replace("/api/preview/", ""))
-            fpath = os.path.join(OUTPUTS_DIR, fname)
-            if not os.path.exists(fpath):
-                fpath = os.path.join(UPLOADS_DIR, fname)
-            if os.path.exists(fpath):
-                self.serve_video_range(fpath)
+            safe_path = resolve_safe_path(fname)
+            if safe_path and os.path.exists(safe_path):
+                self.serve_video_range(safe_path)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -688,11 +828,9 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
 
         elif path.startswith("/api/download/"):
             fname = os.path.basename(path.replace("/api/download/", ""))
-            fpath = os.path.join(OUTPUTS_DIR, fname)
-            if not os.path.exists(fpath):
-                fpath = os.path.join(UPLOADS_DIR, fname)
-            if os.path.exists(fpath):
-                self.serve_download(fpath, fname)
+            safe_path = resolve_safe_path(fname)
+            if safe_path and os.path.exists(safe_path):
+                self.serve_download(safe_path, fname)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -700,12 +838,12 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
 
         elif path.startswith("/static/"):
             rel_file = path.replace("/static/", "")
-            full = os.path.join(STATIC_DIR, rel_file)
-            if os.path.exists(full) and os.path.isfile(full):
+            full = resolve_safe_path(rel_file, STATIC_DIR)
+            if full and os.path.exists(full) and os.path.isfile(full):
                 mime = "text/plain"
-                if full.endswith(".html"): mime = "text/html"
-                elif full.endswith(".css"): mime = "text/css"
-                elif full.endswith(".js"): mime = "application/javascript"
+                if full.endswith(".html"): mime = "text/html; charset=utf-8"
+                elif full.endswith(".css"): mime = "text/css; charset=utf-8"
+                elif full.endswith(".js"): mime = "application/javascript; charset=utf-8"
                 elif full.endswith(".svg"): mime = "image/svg+xml"
                 elif full.endswith(".png"): mime = "image/png"
                 self.serve_file(full, mime)
@@ -718,32 +856,70 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if not self.is_trusted_origin():
+            self.send_json({"error": "Forbidden: Untrusted Origin or Host"}, status=403)
+            return
+
+        if not self.validate_session_token():
+            self.send_json({"error": "Forbidden: Invalid or missing X-Omni-Token"}, status=403)
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
         if path == "/api/upload":
-            # Stream directly to uploads dir to handle gigabyte files
+            content_length_header = self.headers.get("Content-Length")
+            try:
+                content_length = int(content_length_header) if content_length_header else 0
+            except ValueError:
+                self.send_json({"error": "Bad Request: Invalid Content-Length"}, status=400)
+                return
+
+            if content_length <= 0:
+                self.send_json({"error": "Bad Request: Content-Length required"}, status=400)
+                return
+
+            if content_length > MAX_UPLOAD_SIZE:
+                self.send_json({"error": f"Payload Too Large: Exceeds {format_bytes(MAX_UPLOAD_SIZE)} limit"}, status=413)
+                return
+
             filename = self.headers.get("X-File-Name")
             if filename:
                 filename = urllib.parse.unquote(filename)
             else:
                 filename = f"upload_{uuid.uuid4().hex[:8]}.mkv"
-                
+
             safe_filename = sanitize_filename(filename)
             dest_path = os.path.join(UPLOADS_DIR, safe_filename)
-            
-            content_length = int(self.headers.get("Content-Length", 0))
-            
+
             remaining = content_length
-            with open(dest_path, "wb") as f:
-                while remaining > 0:
-                    chunk_size = min(remaining, 65536)
-                    chunk = self.rfile.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    remaining -= len(chunk)
-                    
+            try:
+                with open(dest_path, "wb") as f:
+                    while remaining > 0:
+                        chunk_size = min(remaining, 65536)
+                        chunk = self.rfile.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+
+                if remaining > 0:
+                    if os.path.exists(dest_path):
+                        try:
+                            os.remove(dest_path)
+                        except Exception:
+                            pass
+                    self.send_json({"error": "Upload incomplete / client disconnected"}, status=400)
+                    return
+            except Exception as e:
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                self.send_json({"error": f"Upload failed: {e}"}, status=500)
+                return
+
             probe = probe_file(dest_path)
             self.send_json({
                 "status": "uploaded",
@@ -764,13 +940,14 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
                 pass
 
         if path == "/api/probe":
-            target_path = data.get("path")
-            if not target_path and data.get("filename"):
-                target_path = os.path.join(UPLOADS_DIR, data.get("filename"))
-            if not target_path or not os.path.exists(target_path):
-                self.send_json({"error": "File does not exist"}, status=400)
+            raw_path = data.get("path")
+            if not raw_path and data.get("filename"):
+                raw_path = os.path.join(UPLOADS_DIR, data.get("filename"))
+            safe_target = resolve_safe_path(raw_path)
+            if not safe_target:
+                self.send_json({"error": "File does not exist or access denied"}, status=400)
                 return
-            probe_result = probe_file(target_path)
+            probe_result = probe_file(safe_target)
             if probe_result:
                 self.send_json(probe_result)
             else:
@@ -778,21 +955,58 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/convert":
-            input_path = data.get("path")
-            if not input_path and data.get("filename"):
-                input_path = os.path.join(UPLOADS_DIR, data.get("filename"))
-                
-            if not input_path or not os.path.exists(input_path):
-                self.send_json({"error": "Input file not found"}, status=400)
+            raw_path = data.get("path")
+            if not raw_path and data.get("filename"):
+                raw_path = os.path.join(UPLOADS_DIR, data.get("filename"))
+            safe_input = resolve_safe_path(raw_path)
+            if not safe_input:
+                self.send_json({"error": "Input file not found or access denied"}, status=400)
                 return
-                
+
+            preset = data.get("preset", "telegram_web_mp4")
+            if preset not in ["telegram_web_mp4", "universal_mp4", "webm", "audio_mp3", "audio_aac", "audio_wav", "gif", "mkv"]:
+                self.send_json({"error": "Invalid preset specified"}, status=400)
+                return
+
+            resolution = data.get("resolution", "original")
+            if resolution not in ["original", "1080p", "720p", "480p"]:
+                resolution = "original"
+            data["resolution"] = resolution
+
+            try:
+                crf = int(data.get("crf", 18))
+                crf = max(0, min(51, crf))
+            except (ValueError, TypeError):
+                crf = 18
+            data["crf"] = crf
+
+            trim_start = str(data.get("trim_start", "")).strip()
+            trim_end = str(data.get("trim_end", "")).strip()
+            t_start = parse_time_str(trim_start) if trim_start else 0.0
+            t_end = parse_time_str(trim_end) if trim_end else 0.0
+            if t_start < 0 or t_end < 0:
+                self.send_json({"error": "Trim timestamps cannot be negative"}, status=400)
+                return
+            if t_end > 0 and t_end <= t_start:
+                self.send_json({"error": "Trim end must be greater than trim start"}, status=400)
+                return
+
+            custom_name = data.get("custom_filename")
+            if custom_name:
+                data["custom_filename"] = os.path.basename(str(custom_name).strip())
+
             job_id = uuid.uuid4().hex[:12]
             with JOBS_LOCK:
+                if len(JOBS) >= MAX_JOB_HISTORY:
+                    finished = [jid for jid, j in JOBS.items() if j.get("status") in ["completed", "failed", "cancelled"]]
+                    for old_id in finished[:len(JOBS) - MAX_JOB_HISTORY + 1]:
+                        del JOBS[old_id]
+
                 JOBS[job_id] = {
                     "id": job_id,
-                    "input_path": input_path,
-                    "filename": os.path.basename(input_path),
-                    "preset": data.get("preset", "telegram_web_mp4"),
+                    "input_path": safe_input,
+                    "filename": os.path.basename(safe_input),
+                    "preset": preset,
                     "status": "queued",
                     "progress": 0.0,
                     "fps": 0,
@@ -802,14 +1016,14 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
                     "processed_formatted": "0 B",
                     "output_filename": None,
                     "output_path": None,
-                    "logs": [f"[omni-engine] Job queued: {os.path.basename(input_path)} -> preset: {data.get('preset')}"]
+                    "logs": [f"[omni-engine] Job queued: {os.path.basename(safe_input)} -> preset: {preset}"]
                 }
-                
-            data["input_path"] = input_path
+
+            data["input_path"] = safe_input
             t = threading.Thread(target=run_conversion_job, args=(job_id, data))
             t.daemon = True
             t.start()
-            
+
             self.send_json({"status": "queued", "job_id": job_id})
             return
 
@@ -839,8 +1053,16 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/open-folder":
-            target_path = data.get("path")
-            success, resolved_path = reveal_in_file_manager(target_path)
+            raw_target = data.get("path")
+            if raw_target:
+                safe_target = resolve_safe_path(raw_target)
+                if not safe_target:
+                    self.send_json({"error": "Path access denied or invalid"}, status=400)
+                    return
+            else:
+                safe_target = OUTPUTS_DIR
+
+            success, resolved_path = reveal_in_file_manager(safe_target)
             if success:
                 self.send_json({"status": "opened", "path": resolved_path})
             else:
@@ -851,6 +1073,7 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             self.send_json({"status": "shutting_down"})
             def do_exit():
                 time.sleep(0.5)
+                remove_pid_file()
                 os._exit(0)
             threading.Thread(target=do_exit, daemon=True).start()
             return
