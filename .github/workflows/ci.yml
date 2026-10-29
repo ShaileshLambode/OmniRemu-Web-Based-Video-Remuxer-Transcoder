@@ -23,10 +23,18 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Set up FFmpeg
+    - name: Set up FFmpeg (Windows)
+      if: runner.os == 'Windows'
       uses: FedericoCarboni/setup-ffmpeg@v3
       with:
         ffmpeg-version: release
+
+    - name: Set up FFmpeg (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        if ! command -v ffmpeg &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+        fi
 
     - name: Diagnostic FFmpeg version
       run: ffmpeg -version

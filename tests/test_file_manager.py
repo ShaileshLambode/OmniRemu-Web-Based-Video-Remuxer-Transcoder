@@ -41,7 +41,11 @@ class TestFileManager(unittest.TestCase):
             with patch("subprocess.Popen") as mock_popen:
                 ok, path = reveal_in_file_manager(test_file)
                 self.assertTrue(ok)
-                self.assertEqual(path, os.path.normpath(os.path.abspath(test_file)))
+                if sys.platform in ["win32", "darwin"]:
+                    self.assertEqual(path, os.path.normpath(os.path.abspath(test_file)))
+                else:
+                    # Linux xdg-open opens the parent folder
+                    self.assertEqual(path, os.path.normpath(os.path.abspath(OUTPUTS_DIR)))
         finally:
             if os.path.exists(test_file):
                 os.remove(test_file)
