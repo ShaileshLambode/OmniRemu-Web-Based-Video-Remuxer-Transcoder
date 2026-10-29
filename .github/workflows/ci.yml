@@ -40,12 +40,11 @@ jobs:
     - name: Run Test Suite
       shell: bash
       run: |
-        set +e
-        python -m unittest discover -s tests -v > test_output.log 2>&1
-        TEST_EXIT=$?
+        python -m unittest discover -s tests -v > test_output.log 2>&1 || TEST_FAILED=1
         cat test_output.log
-        echo "## Test Output (Exit: $TEST_EXIT)" >> "$GITHUB_STEP_SUMMARY"
-        echo '```text' >> "$GITHUB_STEP_SUMMARY"
-        cat test_output.log >> "$GITHUB_STEP_SUMMARY"
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
-        exit $TEST_EXIT
+        if [ "$TEST_FAILED" = "1" ]; then
+          tail -n 25 test_output.log | while IFS= read -r line; do
+            echo "::error title=Test Failure::$line"
+          done
+          exit 1
+        fi
