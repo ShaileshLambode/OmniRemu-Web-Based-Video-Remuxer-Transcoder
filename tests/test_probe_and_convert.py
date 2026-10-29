@@ -7,11 +7,17 @@ from server import probe_file, run_conversion_job, JOBS, JOBS_LOCK, OUTPUTS_DIR
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
+def require_fixture(test_case, path):
+    if not os.path.exists(path):
+        if os.environ.get("CI"):
+            test_case.fail(f"Required CI fixture missing: {path}")
+        else:
+            test_case.skipTest(f"Fixture {path} not found")
+
 class TestProbeAndConvert(unittest.TestCase):
     def test_probe_h264_aac(self):
         sample = os.path.join(FIXTURES_DIR, "test_h264_aac.mp4")
-        if not os.path.exists(sample):
-            self.skipTest(f"Fixture {sample} not found")
+        require_fixture(self, sample)
 
         info = probe_file(sample)
         self.assertIsNotNone(info)
@@ -25,8 +31,7 @@ class TestProbeAndConvert(unittest.TestCase):
 
     def test_probe_hevc_eac3(self):
         sample = os.path.join(FIXTURES_DIR, "test_hevc_eac3.mkv")
-        if not os.path.exists(sample):
-            self.skipTest(f"Fixture {sample} not found")
+        require_fixture(self, sample)
 
         info = probe_file(sample)
         self.assertIsNotNone(info)
@@ -39,8 +44,7 @@ class TestProbeAndConvert(unittest.TestCase):
 
     def test_probe_dual_audio(self):
         sample = os.path.join(FIXTURES_DIR, "test_dual_audio.mkv")
-        if not os.path.exists(sample):
-            self.skipTest(f"Fixture {sample} not found")
+        require_fixture(self, sample)
 
         info = probe_file(sample)
         self.assertIsNotNone(info)
@@ -51,8 +55,7 @@ class TestProbeAndConvert(unittest.TestCase):
 
     def test_probe_audio_only(self):
         sample = os.path.join(FIXTURES_DIR, "test_audio_only.mp3")
-        if not os.path.exists(sample):
-            self.skipTest(f"Fixture {sample} not found")
+        require_fixture(self, sample)
 
         info = probe_file(sample)
         self.assertIsNotNone(info)
@@ -62,8 +65,7 @@ class TestProbeAndConvert(unittest.TestCase):
 
     def test_fast_remux_execution(self):
         sample = os.path.join(FIXTURES_DIR, "test_h264_aac.mp4")
-        if not os.path.exists(sample):
-            self.skipTest(f"Fixture {sample} not found")
+        require_fixture(self, sample)
 
         job_id = f"test_job_{int(time.time()*1000)}"
         with JOBS_LOCK:
@@ -101,8 +103,7 @@ class TestProbeAndConvert(unittest.TestCase):
 
     def test_audio_extraction_execution(self):
         sample = os.path.join(FIXTURES_DIR, "test_h264_aac.mp4")
-        if not os.path.exists(sample):
-            self.skipTest(f"Fixture {sample} not found")
+        require_fixture(self, sample)
 
         job_id = f"test_audio_job_{int(time.time()*1000)}"
         with JOBS_LOCK:

@@ -28,6 +28,9 @@ jobs:
       with:
         ffmpeg-version: release
 
+    - name: Diagnostic FFmpeg version
+      run: ffmpeg -version
+
     - name: Verify Python compilation
       run: python -m py_compile server.py
 

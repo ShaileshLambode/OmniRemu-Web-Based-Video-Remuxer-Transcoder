@@ -113,7 +113,8 @@ def parse_fps(fps_str):
 def sanitize_filename(filename, default_ext=".mkv"):
     if not filename or not str(filename).strip():
         return f"upload_{int(time.time())}{default_ext}"
-    filename = os.path.basename(str(filename).strip())
+    filename = str(filename).strip().replace("\\", "/")
+    filename = os.path.basename(filename)
     illegal_chars = set('<>:"/\\|?*')
     cleaned = "".join(c for c in filename if c not in illegal_chars and ord(c) >= 32)
     cleaned = cleaned.strip(". ")
@@ -134,6 +135,10 @@ def resolve_safe_path(target_path, base_dir=None):
     # Reject Windows UNC network paths
     if raw.startswith("\\\\") or raw.startswith("//"):
         return None
+
+    # Normalize backslashes on POSIX systems so Windows-style traversals are properly confined
+    if os.sep == "/":
+        raw = raw.replace("\\", "/")
 
     allowed_root = os.path.realpath(base_dir or APP_DIR)
 

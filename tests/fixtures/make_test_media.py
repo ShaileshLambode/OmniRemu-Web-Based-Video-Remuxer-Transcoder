@@ -52,6 +52,7 @@ def generate_fixtures(output_dir=None):
     }
     
     generated = {}
+    failed = []
     for filename, cmd in files.items():
         out_path = os.path.join(target_dir, filename)
         if not os.path.exists(out_path):
@@ -59,11 +60,18 @@ def generate_fixtures(output_dir=None):
             ok = run_cmd(cmd)
             if ok:
                 generated[filename] = out_path
+            else:
+                failed.append(filename)
         else:
             generated[filename] = out_path
             
-    return generated
+    if failed:
+        print(f"ERROR: Failed to generate required fixtures: {failed}", file=sys.stderr)
+        return generated, False
+    return generated, True
 
 if __name__ == "__main__":
-    out = generate_fixtures()
+    out, ok = generate_fixtures()
     print("Fixtures ready:", list(out.keys()))
+    if not ok:
+        sys.exit(1)
