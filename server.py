@@ -1090,6 +1090,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
                     if proc:
                         try:
                             proc.terminate()
+                            try:
+                                proc.wait(timeout=2.0)
+                            except Exception:
+                                proc.kill()
                         except Exception:
                             pass
                     out_path = job.get("output_path")
