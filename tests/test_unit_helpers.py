@@ -80,7 +80,7 @@ class TestUnitHelpers(unittest.TestCase):
 
     def test_resolve_safe_path(self):
         # Create a temp directory inside workspace for safe isolation
-        temp_dir = tempfile.mkdtemp(dir=APP_DIR)
+        temp_dir = os.path.realpath(tempfile.mkdtemp(dir=APP_DIR))
         try:
             sample_file = os.path.join(temp_dir, "sample.mp4")
             with open(sample_file, "w") as f:
@@ -106,7 +106,7 @@ class TestUnitHelpers(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_get_unique_output_path(self):
-        temp_dir = tempfile.mkdtemp()
+        temp_dir = os.path.realpath(tempfile.mkdtemp())
         try:
             fname, path = get_unique_output_path("test_video", ".mp4", temp_dir)
             self.assertEqual(fname, "test_video_converted.mp4")
@@ -130,7 +130,7 @@ class TestUnitHelpers(unittest.TestCase):
 
     def test_reserve_unique_output_path_concurrent(self):
         import concurrent.futures
-        temp_dir = tempfile.mkdtemp()
+        temp_dir = os.path.realpath(tempfile.mkdtemp())
         try:
             results = []
             def reserve_worker():
@@ -156,7 +156,7 @@ class TestUnitHelpers(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_reserve_unique_output_path_confinement(self):
-        temp_dir = tempfile.mkdtemp()
+        temp_dir = os.path.realpath(tempfile.mkdtemp())
         try:
             # Traversal attempts in custom filename must be stripped to basenames and confined
             fname, path = reserve_unique_output_path("../../evil_traversal", ".mp4", temp_dir)
