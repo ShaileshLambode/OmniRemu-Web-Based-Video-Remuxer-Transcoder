@@ -10,6 +10,8 @@ from server import (
     sanitize_filename,
     resolve_safe_path,
     get_unique_output_path,
+    reserve_unique_output_path,
+    release_output_reservation,
     APP_DIR,
 )
 
@@ -123,6 +125,49 @@ class TestUnitHelpers(unittest.TestCase):
 
             fname3, path3 = get_unique_output_path("test_video", ".mp4", temp_dir)
             self.assertEqual(fname3, "test_video_converted (2).mp4")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_reserve_unique_output_path_concurrent(self):
+        import concurrent.futures
+        temp_dir = tempfile.mkdtemp()
+        try:
+            results = []
+            def reserve_worker():
+                return reserve_unique_output_path("race_test", ".mp4", temp_dir)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [executor.submit(reserve_worker) for _ in range(15)]
+                for f in concurrent.futures.as_completed(futures):
+                    results.append(f.result())
+
+            filenames = [r[0] for r in results]
+            paths = [r[1] for r in results]
+
+            # Every concurrent call must receive a distinct filename and path
+            self.assertEqual(len(filenames), 15)
+            self.assertEqual(len(set(filenames)), 15)
+            self.assertEqual(len(set(paths)), 15)
+
+            # Release all reservations
+            for p in paths:
+                release_output_reservation(p)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_reserve_unique_output_path_confinement(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Traversal attempts in custom filename must be stripped to basenames and confined
+            fname, path = reserve_unique_output_path("../../evil_traversal", ".mp4", temp_dir)
+            self.assertTrue(os.path.commonpath([temp_dir, path]) == temp_dir)
+            self.assertEqual(fname, "evil_traversal_converted.mp4")
+            release_output_reservation(path)
+
+            fname_unc, path_unc = reserve_unique_output_path(r"\\192.168.1.1\share\exploit", ".mp4", temp_dir)
+            self.assertTrue(os.path.commonpath([temp_dir, path_unc]) == temp_dir)
+            self.assertEqual(fname_unc, "exploit_converted.mp4")
+            release_output_reservation(path_unc)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

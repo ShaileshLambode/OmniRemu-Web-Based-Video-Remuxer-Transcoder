@@ -162,25 +162,52 @@ def resolve_safe_path(target_path, base_dir=None):
 
     return resolved if os.path.exists(resolved) else None
 
-def get_unique_output_path(base_name, ext, outputs_dir):
-    base_name = os.path.basename(str(base_name).strip())
+RESERVED_OUTPUTS = set()
+RESERVATION_LOCK = threading.Lock()
+
+def reserve_unique_output_path(base_name, ext, outputs_dir=None):
+    """
+    Atomically generates and reserves a collision-free output file path under outputs_dir.
+    Rejects directory traversal, strips illegal characters, and ensures concurrent
+    jobs never select or overwrite the same output path.
+    """
+    target_dir = os.path.realpath(outputs_dir or OUTPUTS_DIR)
+    raw_name = str(base_name or "").strip().replace("\\", "/")
+    base_name = os.path.basename(raw_name)
     illegal_chars = set('<>:"/\\|?*')
     base_name = "".join(c for c in base_name if c not in illegal_chars and ord(c) >= 32).strip(". ")
     if not base_name:
         base_name = f"output_{int(time.time())}"
 
-    candidate_name = f"{base_name}_converted{ext}"
-    candidate_path = os.path.join(outputs_dir, candidate_name)
-    if not os.path.exists(candidate_path):
-        return candidate_name, candidate_path
+    with RESERVATION_LOCK:
+        counter = 0
+        while True:
+            suffix = f" ({counter})" if counter > 0 else ""
+            candidate_name = f"{base_name}_converted{suffix}{ext}"
+            candidate_path = os.path.realpath(os.path.join(target_dir, candidate_name))
 
-    counter = 1
-    while os.path.exists(candidate_path):
-        candidate_name = f"{base_name}_converted ({counter}){ext}"
-        candidate_path = os.path.join(outputs_dir, candidate_name)
-        counter += 1
+            # Strictly ensure candidate remains inside target_dir
+            if os.path.commonpath([target_dir, candidate_path]) != target_dir:
+                candidate_name = f"safe_output_{uuid.uuid4().hex[:8]}{ext}"
+                candidate_path = os.path.realpath(os.path.join(target_dir, candidate_name))
 
-    return candidate_name, candidate_path
+            if candidate_path not in RESERVED_OUTPUTS and not os.path.exists(candidate_path):
+                RESERVED_OUTPUTS.add(candidate_path)
+                return candidate_name, candidate_path
+            counter += 1
+
+def release_output_reservation(path):
+    """
+    Releases the in-memory reservation for an output path once a job is finished or cancelled.
+    """
+    if not path:
+        return
+    norm = os.path.realpath(str(path))
+    with RESERVATION_LOCK:
+        RESERVED_OUTPUTS.discard(norm)
+
+def get_unique_output_path(base_name, ext, outputs_dir=None):
+    return reserve_unique_output_path(base_name, ext, outputs_dir)
 
 def probe_file(file_path):
     if not os.path.exists(file_path):
@@ -369,213 +396,217 @@ def run_conversion_job(job_id, options):
         elif preset == "mkv":
             ext = ".mkv"
         
-        output_filename, output_path = get_unique_output_path(base_name, ext, OUTPUTS_DIR)
-    
-        # Check if user specified audio strategy, resolution, etc.
-        audio_strategy = options.get("audio_strategy", "auto")
-        resolution = options.get("resolution", "original")
-        crf = options.get("crf", 18)
-        faststart = options.get("faststart", True)
-        trim_start = options.get("trim_start")
-        trim_end = options.get("trim_end")
-    
-        # Calculate effective target duration for accurate progress and ETA
-        target_duration = total_duration
-        t_start = parse_time_str(trim_start) if trim_start else 0.0
-        t_end = parse_time_str(trim_end) if trim_end else 0.0
-        if t_end > t_start:
-            target_duration = t_end - t_start
-        elif t_start > 0 and total_duration > t_start:
-            target_duration = total_duration - t_start
-
-        video_streams = probe_info.get("video_streams", []) if probe_info else []
-        audio_streams = probe_info.get("audio_streams", []) if probe_info else []
-        has_video = len(video_streams) > 0
-        has_audio = len(audio_streams) > 0
-
-        if not has_video and not has_audio:
-            with JOBS_LOCK:
-                job["status"] = "failed"
-                job["error"] = "Input file contains no playable video or audio streams."
-                job["logs"].append("[omni-engine] ERROR: No valid video or audio streams detected.")
-            return
-
-        if preset == "gif" and not has_video:
-            with JOBS_LOCK:
-                job["status"] = "failed"
-                job["error"] = "Input file contains no video stream to generate a GIF."
-                job["logs"].append("[omni-engine] ERROR: Video stream required for GIF generation.")
-            return
-
-        v_idx = video_streams[0]["index"] if has_video else None
-                
-        cmd = ["ffmpeg", "-y"]
-    
-        # Trim parameters before input for fast seek
-        if trim_start and trim_start.strip():
-            cmd.extend(["-ss", trim_start.strip()])
-        if trim_end and trim_end.strip():
-            cmd.extend(["-to", trim_end.strip()])
-        
-        cmd.extend(["-i", input_path])
-    
-        # Command Construction by Preset
-        if preset == "telegram_web_mp4":
-            if has_video:
-                cmd.extend(["-map", f"0:{v_idx}", "-c:v", "copy"])
-            cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
-            if faststart and ext in [".mp4", ".m4a"]:
-                cmd.extend(["-movflags", "+faststart"])
-            
-        elif preset == "universal_mp4":
-            if has_video:
-                cmd.extend(["-map", f"0:{v_idx}"])
-                vf_filters = []
-                if resolution == "1080p":
-                    vf_filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
-                elif resolution == "720p":
-                    vf_filters.append("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2")
-                elif resolution == "480p":
-                    vf_filters.append("scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2")
-                
-                if vf_filters:
-                    cmd.extend(["-vf", ",".join(vf_filters)])
-                
-                cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf)])
-            
-            cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
-            if faststart and ext in [".mp4", ".m4a"]:
-                cmd.extend(["-movflags", "+faststart"])
-            
-        elif preset == "webm":
-            if has_video:
-                cmd.extend(["-map", f"0:{v_idx}", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0"])
-            cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
-            
-        elif preset in ["audio_mp3", "audio_aac", "audio_wav"]:
-            cmd.extend(["-vn"])
-            if has_audio:
-                first_a_idx = audio_streams[0]["index"]
-                cmd.extend(["-map", f"0:{first_a_idx}"])
-            if preset == "audio_mp3":
-                cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
-            elif preset == "audio_aac":
-                cmd.extend(["-c:a", "aac", "-b:a", "256k"])
-            elif preset == "audio_wav":
-                cmd.extend(["-c:a", "pcm_s16le"])
-            
-        elif preset == "gif":
-            if has_video:
-                cmd.extend(["-map", f"0:{v_idx}"])
-            cmd.extend(["-vf", "fps=24,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-an"])
-        
-        cmd.extend(["-progress", "pipe:1", output_path])
-    
-        log_cmd_str = " ".join([f'"{x}"' if " " in x else x for x in cmd])
-    
-        with JOBS_LOCK:
-            job["cmd"] = log_cmd_str
-            job["output_filename"] = output_filename
-            job["output_path"] = output_path
-            job["logs"].append(f"[omni-engine] Executing: {log_cmd_str}")
-        
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1,
-                encoding="utf-8",
-                errors="replace"
-            )
-            with JOBS_LOCK:
-                job["proc"] = proc
+            output_filename, output_path = reserve_unique_output_path(base_name, ext, OUTPUTS_DIR)
+        
+            # Check if user specified audio strategy, resolution, etc.
+            audio_strategy = options.get("audio_strategy", "auto")
+            resolution = options.get("resolution", "original")
+            crf = options.get("crf", 18)
+            faststart = options.get("faststart", True)
+            trim_start = options.get("trim_start")
+            trim_end = options.get("trim_end")
+        
+            # Calculate effective target duration for accurate progress and ETA
+            target_duration = total_duration
+            t_start = parse_time_str(trim_start) if trim_start else 0.0
+            t_end = parse_time_str(trim_end) if trim_end else 0.0
+            if t_end > t_start:
+                target_duration = t_end - t_start
+            elif t_start > 0 and total_duration > t_start:
+                target_duration = total_duration - t_start
+
+            video_streams = probe_info.get("video_streams", []) if probe_info else []
+            audio_streams = probe_info.get("audio_streams", []) if probe_info else []
+            has_video = len(video_streams) > 0
+            has_audio = len(audio_streams) > 0
+
+            if not has_video and not has_audio:
+                with JOBS_LOCK:
+                    job["status"] = "failed"
+                    job["error"] = "Input file contains no playable video or audio streams."
+                    job["logs"].append("[omni-engine] ERROR: No valid video or audio streams detected.")
+                return
+
+            if preset == "gif" and not has_video:
+                with JOBS_LOCK:
+                    job["status"] = "failed"
+                    job["error"] = "Input file contains no video stream to generate a GIF."
+                    job["logs"].append("[omni-engine] ERROR: Video stream required for GIF generation.")
+                return
+
+            v_idx = video_streams[0]["index"] if has_video else None
+                    
+            cmd = ["ffmpeg", "-y"]
+        
+            # Trim parameters before input for fast seek
+            if trim_start and trim_start.strip():
+                cmd.extend(["-ss", trim_start.strip()])
+            if trim_end and trim_end.strip():
+                cmd.extend(["-to", trim_end.strip()])
             
-            def read_stderr(p):
-                for line in p.stderr:
+            cmd.extend(["-i", input_path])
+        
+            # Command Construction by Preset
+            if preset == "telegram_web_mp4":
+                if has_video:
+                    cmd.extend(["-map", f"0:{v_idx}", "-c:v", "copy"])
+                cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+                if faststart and ext in [".mp4", ".m4a"]:
+                    cmd.extend(["-movflags", "+faststart"])
+                
+            elif preset == "universal_mp4":
+                if has_video:
+                    cmd.extend(["-map", f"0:{v_idx}"])
+                    vf_filters = []
+                    if resolution == "1080p":
+                        vf_filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
+                    elif resolution == "720p":
+                        vf_filters.append("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2")
+                    elif resolution == "480p":
+                        vf_filters.append("scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2")
+                    
+                    if vf_filters:
+                        cmd.extend(["-vf", ",".join(vf_filters)])
+                    
+                    cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf)])
+                
+                cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+                if faststart and ext in [".mp4", ".m4a"]:
+                    cmd.extend(["-movflags", "+faststart"])
+                
+            elif preset == "webm":
+                if has_video:
+                    cmd.extend(["-map", f"0:{v_idx}", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0"])
+                cmd.extend(build_audio_flags(probe_info, audio_strategy, preset))
+                
+            elif preset in ["audio_mp3", "audio_aac", "audio_wav"]:
+                cmd.extend(["-vn"])
+                if has_audio:
+                    first_a_idx = audio_streams[0]["index"]
+                    cmd.extend(["-map", f"0:{first_a_idx}"])
+                if preset == "audio_mp3":
+                    cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
+                elif preset == "audio_aac":
+                    cmd.extend(["-c:a", "aac", "-b:a", "256k"])
+                elif preset == "audio_wav":
+                    cmd.extend(["-c:a", "pcm_s16le"])
+                
+            elif preset == "gif":
+                if has_video:
+                    cmd.extend(["-map", f"0:{v_idx}"])
+                cmd.extend(["-vf", "fps=24,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-an"])
+            
+            cmd.extend(["-progress", "pipe:1", output_path])
+        
+            log_cmd_str = " ".join([f'"{x}"' if " " in x else x for x in cmd])
+        
+            with JOBS_LOCK:
+                job["cmd"] = log_cmd_str
+                job["output_filename"] = output_filename
+                job["output_path"] = output_path
+                job["logs"].append(f"[omni-engine] Executing: {log_cmd_str}")
+            
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    bufsize=1,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+                with JOBS_LOCK:
+                    job["proc"] = proc
+                
+                def read_stderr(p):
+                    for line in p.stderr:
+                        line = line.strip()
+                        if line:
+                            with JOBS_LOCK:
+                                job["logs"].append(line)
+                                if len(job["logs"]) > 300:
+                                    job["logs"].pop(0)
+                                
+                t_err = threading.Thread(target=read_stderr, args=(proc,))
+                t_err.daemon = True
+                t_err.start()
+            
+                # Read progress from stdout
+                for line in proc.stdout:
                     line = line.strip()
-                    if line:
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                    
                         with JOBS_LOCK:
-                            job["logs"].append(line)
-                            if len(job["logs"]) > 300:
-                                job["logs"].pop(0)
-                            
-            t_err = threading.Thread(target=read_stderr, args=(proc,))
-            t_err.daemon = True
-            t_err.start()
-        
-            # Read progress from stdout
-            for line in proc.stdout:
-                line = line.strip()
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip()
-                
-                    with JOBS_LOCK:
-                        if k == "out_time_us":
+                            if k == "out_time_us":
+                                try:
+                                    cur_time = float(v) / 1000000.0
+                                    job["cur_time"] = cur_time
+                                    if target_duration > 0:
+                                        job["progress"] = min(99.5, round((cur_time / target_duration) * 100, 1))
+                                        elapsed = time.time() - job["start_time"]
+                                        if cur_time > 0 and elapsed > 0:
+                                            eta = (target_duration - cur_time) / (cur_time / elapsed)
+                                            job["eta"] = max(0, int(eta))
+                                except Exception:
+                                    pass
+                            elif k == "fps":
+                                job["fps"] = v
+                            elif k == "speed":
+                                job["speed"] = v
+                            elif k == "total_size":
+                                try:
+                                    job["processed_bytes"] = int(v)
+                                    job["processed_formatted"] = format_bytes(int(v))
+                                except Exception:
+                                    pass
+                                
+                proc.wait()
+                t_err.join(timeout=1.0)
+            
+                duration = round(time.time() - job["start_time"], 2)
+                out_exists = os.path.exists(output_path)
+                out_size = os.path.getsize(output_path) if out_exists else 0
+            
+                with JOBS_LOCK:
+                    if job.get("cancelled"):
+                        job["status"] = "cancelled"
+                        job["logs"].append("[omni-engine] Process was cancelled by user.")
+                        if out_exists:
                             try:
-                                cur_time = float(v) / 1000000.0
-                                job["cur_time"] = cur_time
-                                if target_duration > 0:
-                                    job["progress"] = min(99.5, round((cur_time / target_duration) * 100, 1))
-                                    elapsed = time.time() - job["start_time"]
-                                    if cur_time > 0 and elapsed > 0:
-                                        eta = (target_duration - cur_time) / (cur_time / elapsed)
-                                        job["eta"] = max(0, int(eta))
+                                os.remove(output_path)
                             except Exception:
                                 pass
-                        elif k == "fps":
-                            job["fps"] = v
-                        elif k == "speed":
-                            job["speed"] = v
-                        elif k == "total_size":
+                    elif proc.returncode == 0 and out_exists:
+                        job["status"] = "completed"
+                        job["progress"] = 100.0
+                        job["duration_seconds"] = duration
+                        job["output_size"] = out_size
+                        job["output_size_formatted"] = format_bytes(out_size)
+                        job["logs"].append(f"[omni-engine] Conversion SUCCESS in {duration}s! Output size: {format_bytes(out_size)}")
+                    else:
+                        job["status"] = "failed"
+                        job["error"] = f"FFmpeg exited with code {proc.returncode}"
+                        job["logs"].append(f"[omni-engine] ERROR: Process failed with code {proc.returncode}")
+                        if out_exists:
                             try:
-                                job["processed_bytes"] = int(v)
-                                job["processed_formatted"] = format_bytes(int(v))
+                                os.remove(output_path)
                             except Exception:
                                 pass
-                            
-            proc.wait()
-            t_err.join(timeout=1.0)
-        
-            duration = round(time.time() - job["start_time"], 2)
-            out_exists = os.path.exists(output_path)
-            out_size = os.path.getsize(output_path) if out_exists else 0
-        
-            with JOBS_LOCK:
-                if job.get("cancelled"):
-                    job["status"] = "cancelled"
-                    job["logs"].append("[omni-engine] Process was cancelled by user.")
-                    if out_exists:
-                        try:
-                            os.remove(output_path)
-                        except Exception:
-                            pass
-                elif proc.returncode == 0 and out_exists:
-                    job["status"] = "completed"
-                    job["progress"] = 100.0
-                    job["duration_seconds"] = duration
-                    job["output_size"] = out_size
-                    job["output_size_formatted"] = format_bytes(out_size)
-                    job["logs"].append(f"[omni-engine] Conversion SUCCESS in {duration}s! Output size: {format_bytes(out_size)}")
-                else:
-                    job["status"] = "failed"
-                    job["error"] = f"FFmpeg exited with code {proc.returncode}"
-                    job["logs"].append(f"[omni-engine] ERROR: Process failed with code {proc.returncode}")
-                    if out_exists:
-                        try:
-                            os.remove(output_path)
-                        except Exception:
-                            pass
-                
-        except Exception as e:
-            with JOBS_LOCK:
-                if not job.get("cancelled"):
-                    job["status"] = "failed"
-                    job["error"] = str(e)
-                    job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
+                    
+            except Exception as e:
+                with JOBS_LOCK:
+                    if not job.get("cancelled"):
+                        job["status"] = "failed"
+                        job["error"] = str(e)
+                        job["logs"].append(f"[omni-engine] EXCEPTION: {e}")
+        finally:
+            if output_path:
+                release_output_reservation(output_path)
 
 def reveal_in_file_manager(target_path=None):
     """
@@ -662,7 +693,7 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
     def is_trusted_host(self):
         host = self.headers.get("Host")
         if not host:
-            return True
+            return False
         host = host.strip().lower()
         if host.startswith("["):
             bracket_end = host.find("]")
@@ -684,7 +715,7 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             parsed = urllib.parse.urlparse(origin)
             orig_host = (parsed.hostname or "").strip().lower()
             orig_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-            if orig_host in ["localhost", "127.0.0.1"] and orig_port == self.current_port:
+            if orig_host in ["localhost", "127.0.0.1", "::1"] and orig_port == self.current_port:
                 return True
         except Exception:
             return False
@@ -750,6 +781,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/status":
+            if not self.is_trusted_origin():
+                self.send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+                return
+
             # Hardware and version info
             ff_ver = "FFmpeg 8.1"
             try:
@@ -811,6 +846,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path.startswith("/api/thumbnail/"):
+            if not self.is_trusted_origin():
+                self.send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+                return
+
             thumb_name = os.path.basename(path.replace("/api/thumbnail/", ""))
             thumb_path = os.path.join(THUMBS_DIR, thumb_name)
             safe_thumb = resolve_safe_path(thumb_path, THUMBS_DIR)
@@ -822,6 +861,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path.startswith("/api/preview/"):
+            if not self.is_trusted_origin():
+                self.send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+                return
+
             fname = os.path.basename(path.replace("/api/preview/", ""))
             safe_path = resolve_safe_path(fname)
             if safe_path and os.path.exists(safe_path):
@@ -832,6 +875,10 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
             return
 
         elif path.startswith("/api/download/"):
+            if not self.is_trusted_origin():
+                self.send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+                return
+
             fname = os.path.basename(path.replace("/api/download/", ""))
             safe_path = resolve_safe_path(fname)
             if safe_path and os.path.exists(safe_path):
@@ -1046,11 +1093,13 @@ class OmniRequestHandler(BaseHTTPRequestHandler):
                         except Exception:
                             pass
                     out_path = job.get("output_path")
-                    if out_path and os.path.exists(out_path):
-                        try:
-                            os.remove(out_path)
-                        except Exception:
-                            pass
+                    if out_path:
+                        release_output_reservation(out_path)
+                        if os.path.exists(out_path):
+                            try:
+                                os.remove(out_path)
+                            except Exception:
+                                pass
                     job["logs"].append("[omni-engine] Process cancelled by user. Partial files cleaned up.")
                     self.send_json({"status": "cancelled"})
                     return
